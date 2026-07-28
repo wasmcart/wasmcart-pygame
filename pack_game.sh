@@ -19,7 +19,26 @@ CART_WASM="$HERE/out/cart.wasm"
 if [ ! -f "$CART_WASM" ]; then
     CART_WASM="$HERE/out/cart_minimal.wasm"
 fi
-STDLIB_SRC="/usr/lib/python3.13"
+# The cart's Python stdlib. Prefer the CPython that setup_cpython.sh built --
+# it is the same version the cart.wasm interpreter IS, so the .py files match
+# the bytecode. Falling back to a host install is a convenience, not a
+# guarantee: a host on a different 3.x will silently supply mismatched (or,
+# if the version directory does not exist, NO) modules, and the cart then
+# packs and runs but renders nothing. So this resolves explicitly and fails
+# loudly rather than shipping an empty stdlib.
+if [ -z "$STDLIB_SRC" ]; then
+    for cand in "$HERE/vendor/cpython/Lib" \
+                "/usr/lib/python3.13" \
+                "/usr/lib/python3.14" \
+                "/usr/lib/python3.12"; do
+        [ -f "$cand/abc.py" ] && { STDLIB_SRC="$cand"; break; }
+    done
+fi
+if [ ! -f "$STDLIB_SRC/abc.py" ]; then
+    echo "ERROR: no Python stdlib found. Run setup_cpython.sh, or set" >&2
+    echo "       STDLIB_SRC to a CPython Lib/ directory." >&2
+    exit 1
+fi
 
 if [ ! -f "$CART_WASM" ]; then
     echo "ERROR: cart.wasm not found. Run build_minimal.sh first."
@@ -64,18 +83,24 @@ find "$TMPDIR/stdlib" -type d -empty -delete 2>/dev/null || true
 # Copy pygame-ce Python files (colordict, cursors, _data_classes, _sprite, etc.)
 # The C extensions are built-in but they need some Python helper modules
 PYGAME_SRC="${PYGAME_SRC:-$HERE/vendor/pygame-ce}"
-if [ -d "$PYGAME_SRC/src_py" ]; then
-    mkdir -p "$TMPDIR/stdlib/pygame"
-    cp "$PYGAME_SRC"/src_py/*.py "$TMPDIR/stdlib/pygame/" 2>/dev/null || true
-    # _sdl2 subpackage
-    if [ -d "$PYGAME_SRC/src_py/_sdl2" ]; then
-        mkdir -p "$TMPDIR/stdlib/pygame/_sdl2"
-        cp "$PYGAME_SRC"/src_py/_sdl2/*.py "$TMPDIR/stdlib/pygame/_sdl2/" 2>/dev/null || true
-    fi
-    # Remove __init__.py — we don't want the import hook to find it,
-    # since the C module IS the package
-    rm -f "$TMPDIR/stdlib/pygame/__init__.py"
+# vendor/ is gitignored (setup_pygame.sh fetches it), so a fresh clone has no
+# pygame sources. Skipping quietly produced a cart that packed, ran, and
+# rendered pure black -- fail here instead.
+if [ ! -d "$PYGAME_SRC/src_py" ]; then
+    echo "ERROR: pygame-ce sources not found at $PYGAME_SRC" >&2
+    echo "       Run setup_pygame.sh, or set PYGAME_SRC." >&2
+    exit 1
 fi
+mkdir -p "$TMPDIR/stdlib/pygame"
+cp "$PYGAME_SRC"/src_py/*.py "$TMPDIR/stdlib/pygame/"
+# _sdl2 subpackage
+if [ -d "$PYGAME_SRC/src_py/_sdl2" ]; then
+    mkdir -p "$TMPDIR/stdlib/pygame/_sdl2"
+    cp "$PYGAME_SRC"/src_py/_sdl2/*.py "$TMPDIR/stdlib/pygame/_sdl2/"
+fi
+# Remove __init__.py — we don't want the import hook to find it,
+# since the C module IS the package
+rm -f "$TMPDIR/stdlib/pygame/__init__.py"
 
 # Copy extra stdlib shims (moderngl, glm, etc.)
 EXTRA_STDLIB="$HERE/stdlib_extra"
@@ -87,6 +112,17 @@ fi
 
 # Remove empty directories
 find "$TMPDIR/stdlib" -type d -empty -delete 2>/dev/null || true
+
+# A cart with no stdlib packs and runs, but every import fails and the game
+# renders pure black. That is a silent, plausible-looking failure -- catch it
+# here rather than let it reach a host. The floor is deliberately loose; it is
+# a smoke test for "the copies above did nothing", not a precise count.
+STDLIB_COUNT=$(find "$TMPDIR/stdlib" -name "*.py" | wc -l)
+if [ "$STDLIB_COUNT" -lt 50 ]; then
+    echo "ERROR: only $STDLIB_COUNT stdlib .py files staged -- expected hundreds." >&2
+    echo "       The cart would render black. Check STDLIB_SRC and PYGAME_SRC." >&2
+    exit 1
+fi
 
 # Declare the game's resolution so the host can size its window -- and a
 # self-provisioned GL context -- before the cart runs. pygame's set_mode()
