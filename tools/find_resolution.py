@@ -1,20 +1,50 @@
 #!/usr/bin/env python3
 """
-Report a game's declared resolution as WxH, or nothing if it cannot be found.
+Report a game's resolution as WxH. Always prints something.
 
 A host sizes its window -- and a self-provisioned GL context -- before the
 cart runs, so the resolution has to be known at pack time. Scraped from the
 game's own source rather than configured separately, so there is nothing to
 keep in sync.
 
-Recognizes the three forms these examples actually use:
+A game that declares no resolution gets cart_shim.c's DEFAULT_WIDTH/HEIGHT,
+which is what it will report anyway. Printing that explicitly, rather than
+staying silent and letting the manifest omit the field, means the manifest
+always states the resolution: omitting it only works while the host's own
+fallback happens to match the shim's, which is a coincidence and not a
+contract.
+
+Recognizes the forms these examples actually use:
     RES = WIDTH, HEIGHT = 1600, 900
+    WIDTH, HEIGHT = 480, 600
     WIDTH = 480  /  HEIGHT = 600
     setWindowSize(640, 480)  /  set_mode((800, 600))
+    win_size=(800, 600)   as a default argument
 """
 import re, sys, os, glob
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 MIN, MAX = 64, 4096
+
+
+def shim_defaults():
+    """DEFAULT_WIDTH/HEIGHT from cart_shim.c, the size a cart that declares
+    nothing will actually report. Read from the C rather than duplicated here,
+    so the two cannot drift apart silently."""
+    shim = os.path.join(HERE, '..', 'src', 'cart_shim.c')
+    got = {}
+    try:
+        with open(shim, encoding='utf-8', errors='ignore') as fh:
+            for line in fh:
+                m = re.match(r'\s*#define\s+DEFAULT_(WIDTH|HEIGHT)\s+(\d+)', line)
+                if m:
+                    got[m.group(1)] = int(m.group(2))
+    except OSError:
+        pass
+    return got.get('WIDTH', 640), got.get('HEIGHT', 480)
+
+
+SHIM_DEFAULT_W, SHIM_DEFAULT_H = shim_defaults()
 
 
 def plausible(w, h):
@@ -83,7 +113,12 @@ def main():
         if hit:
             print(f'{hit[0]}x{hit[1]}')
             return
-    # nothing found: caller falls back to the cart default
+    # Nothing declared in the Python: the cart will report cart_shim.c's
+    # DEFAULT_WIDTH/HEIGHT. Emit that explicitly rather than staying silent,
+    # so the manifest always states the resolution. Leaving it out only works
+    # while the host's own fallback happens to match this one -- a coincidence,
+    # not a contract, and exactly the kind that breaks quietly later.
+    print(f'{SHIM_DEFAULT_W}x{SHIM_DEFAULT_H}')
 
 
 if __name__ == '__main__':
