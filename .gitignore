@@ -1,0 +1,25 @@
+# Build inputs fetched by setup_cpython.sh / setup_pygame.sh, never committed.
+vendor/
+
+# Build outputs. The engine wasm and packed carts are large and regenerable;
+# unlike the sibling runtimes this repo does NOT ship a prebuilt engine,
+# because a CPython cart is 6-9 MB and the stdlib is fetched per build.
+obj/
+out/
+*.wasc
+*.o
+*.a
+
+# Python artifacts. These were tracked once, in both 3.13 and 3.14 flavours,
+# which is a merge conflict waiting to happen for files nothing reads.
+__pycache__/
+*.py[cod]
+
+# Local scratch
+*.sav
+
+# Screenshots and build logs from local verification runs. Scoped to their
+# own directories: a blanket *.png here also ignored every example's art, so
+# a clean clone had no textures and the games rendered untextured.
+shots/
+build-logs/
