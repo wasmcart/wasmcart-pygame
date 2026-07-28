@@ -42,6 +42,18 @@ my_game.wasc (ZIP)
 
 ## Quick Start
 
+### Just play something
+
+Eight prebuilt carts are attached to the
+[latest release](https://github.com/wasmcart/wasmcart-pygame/releases/latest) —
+download one and run it. No Python, no pygame, no build:
+
+```bash
+npx wasmcart doom_py.wasc
+```
+
+Each cart carries CPython 3.13, pygame-ce, and the game's own code and assets.
+
 ### Pack a game
 
 ```bash
