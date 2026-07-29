@@ -8,6 +8,11 @@ import math
 float64 = float
 float32 = float
 int32 = int
+int16 = int
+int8 = int
+uint32 = int
+uint16 = int
+uint8 = int
 
 class ndarray(list):
     """Minimal ndarray — a list that supports element-wise math."""
@@ -183,6 +188,19 @@ def zeros(shape, dtype=None):
     if len(shape) == 1:
         return array([0.0] * shape[0])
     return array([[0.0] * shape[1] for _ in range(shape[0])])
+
+
+def empty(shape, dtype=None):
+    """Uninitialized array.
+
+    Real numpy leaves the memory undefined; this returns zeros, which is a
+    strictly safer promise and costs nothing at these sizes.
+
+    NOTE: pygame.surfarray does NOT go through this shim. It cannot: its
+    reference (pixels*) functions must alias a Surface's own memory, and a
+    `list` subclass cannot. See stdlib_extra/pygame/surfarray.py.
+    """
+    return zeros(shape, dtype=dtype)
 
 
 def ones(shape, dtype=None):

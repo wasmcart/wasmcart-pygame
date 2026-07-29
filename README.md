@@ -397,6 +397,8 @@ npx wasmcart out/doom_py.wasc
 | `3d_engine` | textured model, cubemap skybox, per-pixel lighting via moderngl | 12 MB |
 | `doom_py` | a raycaster: textured walls, sprite NPCs, weapon, HUD | 13 MB |
 | `rumble` | gamepad rumble via `pygame.joystick.Joystick.rumble()` | 11 MB |
+| `surfarray` | per-pixel work through `pygame.surfarray`: live `pixels3d` writes, `array3d`/`blit_array`, `make_surface`, channel planes | 11 MB |
+| `surfarray_test` | the `surfarray` correctness gate: asserts exact pixel values and prints its verdict on screen | 11 MB |
 
 Every asset is CC0 or generated for this project — see
 [`examples/ASSETS-LICENSE.md`](examples/ASSETS-LICENSE.md).
@@ -461,9 +463,27 @@ frames and comes back `colors=1 ink=0.00%`.
   WebSocket/DataChannel ABI has no Python bindings yet. This is deliberate:
   a game with an optional online feature should reach its `except URLError`,
   not die on the import.
-- **`pygame.surfarray`**: Not built. The module is not compiled into
-  `cart.wasm`; there is a numpy shim in `stdlib_extra/numpy/` if it is ever
-  wired up.
+- **`pygame.surfarray`**: Available, but it is a wasmcart-native
+  implementation rather than upstream's. Upstream `surfarray.py` builds every
+  reference array with `numpy.array(surface.get_view("3"), copy=False)`, which
+  asks numpy to alias a strided C buffer with no copy. The numpy shim in
+  `stdlib_extra/numpy/` is a `list` subclass and cannot alias foreign memory,
+  so bundling upstream would have made `pixels3d` return a *copy*, and every game
+  that mutates pixels in place would render an unchanged surface while the
+  frame counter kept ticking.
+
+  `stdlib_extra/pygame/surfarray.py` instead builds the reference arrays
+  directly on the `memoryview` that `Surface.get_view()` already exports, so
+  `pixels3d` / `pixels2d` / `pixels_red|green|blue|alpha` are **true live
+  views**: writes land in the Surface. The copying calls (`array3d`,
+  `array2d`, `array_*`, `blit_array`, `make_surface`, `map_array`) delegate to
+  the `pixelcopy` C extension. The arrays are ordinary Python objects, not
+  numpy arrays, so they index, slice, iterate and `tolist()` but do not
+  support numpy's vectorized arithmetic; per-pixel loops are the idiom here.
+
+  `examples/surfarray/` renders each capability as a labelled panel, and
+  `examples/surfarray_test/` asserts exact pixel values and prints its verdict
+  on screen.
 - **ASYNCIFY**: Standard `while True` game loops require ASYNCIFY in the link step (adds ~15% binary size). The `_wc_frame()` callback pattern avoids this.
 
 ## Size

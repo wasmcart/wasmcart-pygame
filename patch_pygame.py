@@ -90,3 +90,134 @@ if rw.exists():
         else:
             rw.write_text(rtext.replace(anchor, replacement, 1))
             print(f'patched {rw}: file objects usable as resources')
+
+
+# ---------------------------------------------------------------------------
+# pixelcopy.c: give the channel-selector converter its own BUILD_STATIC copy.
+#
+# surface.c and pixelcopy.c each define `static int _view_kind(PyObject *,
+# void *)` -- a PyArg converter that turns 'R'/'G'/'B'/'A' into an enum --
+# and each has its OWN, DIFFERENT enum:
+#
+#   surface.c:  0D=0 1D=1 2D=2 3D=3 RED=4 GREEN=5 BLUE=6 ALPHA=7
+#   pixelcopy:  RED=0 GREEN=1 BLUE=2 ALPHA=3 COLORKEY=4 RGB=5
+#
+# In an ordinary build these are separate translation units and the duplicate
+# name is harmless. BUILD_STATIC #includes every .c into one unit, so upstream
+# wraps pixelcopy's copy in `#if !defined(BUILD_STATIC)` to dodge the redefinition
+# error. That silences the compiler but is semantically wrong: pixelcopy's call
+# then binds to SURFACE.C's converter, which returns surface.c's enum values,
+# and pixelcopy reads them as its own. Every channel selector is mistranslated:
+#
+#   'R' -> 4 -> COLORKEY : array_red() returns 255 everywhere (the opaque fill)
+#   'G' -> 5 -> RGB      : routed to _copy_mapped, "target byte size of 4"
+#   'B' -> 6, 'A' -> 7   : outside pixelcopy's enum -> default: -> the
+#                          assertion at _copy_colorplane:309, which under wasm
+#                          is an abort/unreachable, NOT a catchable exception
+#
+# So on a static build array_red/green/blue/alpha/colorkey and the pixels_*
+# channel views are variously wrong or fatal. Confirmed live: 'R' gave all-255,
+# 'G' raised the byte-size error, 'B' aborted the cart.
+#
+# The fix is to give pixelcopy a correctly-named converter that is compiled in
+# BOTH configurations, and point its own call at it.
+pc = src.parent / 'pixelcopy.c'
+if pc.exists():
+    ptext = pc.read_text()
+    if 'wasmcart: pixelcopy needs its OWN' in ptext:
+        print('pixelcopy.c already patched')
+    else:
+        converter = '''
+/* wasmcart: pixelcopy needs its OWN view-kind converter under BUILD_STATIC.
+ *
+ * Upstream excludes the one above via `#if !defined(BUILD_STATIC)` so it does
+ * not clash with the identically named function in surface.c. But surface.c's
+ * converter yields SURFACE.C's enum (RED=4, GREEN=5, BLUE=6, ALPHA=7), while
+ * the code below indexes pixelcopy's (RED=0 ... COLORKEY=4, RGB=5). Sharing it
+ * silently mistranslates every channel: 'R' becomes COLORKEY, 'G' becomes RGB,
+ * and 'B'/'A' fall off the end into an assertion failure.
+ *
+ * This copy is always compiled and always used by pixelcopy, so the mapping is
+ * correct in both build configurations. */
+static int
+_pc_view_kind_arg(PyObject *obj, void *view_kind_vptr)
+{
+    unsigned long ch;
+    _pc_view_kind_t *view_kind_ptr = (_pc_view_kind_t *)view_kind_vptr;
+
+    if (PyUnicode_Check(obj)) {
+        if (PyUnicode_GET_LENGTH(obj) != 1) {
+            PyErr_SetString(PyExc_TypeError,
+                            "expected a length 1 string for argument 3");
+            return 0;
+        }
+        ch = PyUnicode_READ_CHAR(obj, 0);
+    }
+    else if (PyBytes_Check(obj)) {
+        if (PyBytes_GET_SIZE(obj) != 1) {
+            PyErr_SetString(PyExc_TypeError,
+                            "expected a length 1 string for argument 3");
+            return 0;
+        }
+        ch = *PyBytes_AS_STRING(obj);
+    }
+    else {
+        PyErr_Format(PyExc_TypeError,
+                     "expected a length one string for argument 3: got '%s'",
+                     Py_TYPE(obj)->tp_name);
+        return 0;
+    }
+    switch (ch) {
+        case 'R':
+        case 'r':
+            *view_kind_ptr = PXC_VIEWKIND_RED;
+            break;
+        case 'G':
+        case 'g':
+            *view_kind_ptr = PXC_VIEWKIND_GREEN;
+            break;
+        case 'B':
+        case 'b':
+            *view_kind_ptr = PXC_VIEWKIND_BLUE;
+            break;
+        case 'A':
+        case 'a':
+            *view_kind_ptr = PXC_VIEWKIND_ALPHA;
+            break;
+        case 'C':
+        case 'c':
+            *view_kind_ptr = VIEWKIND_COLORKEY;
+            break;
+        case 'P':
+        case 'p':
+            *view_kind_ptr = VIEWKIND_RGB;
+            break;
+        default:
+            PyErr_Format(PyExc_TypeError,
+                         "unrecognized view kind '%c' for argument 3",
+                         (int)ch);
+            return 0;
+    }
+    return 1;
+}
+
+typedef union {'''
+
+        anchor = '\ntypedef union {'
+        if anchor not in ptext:
+            print('pixelcopy.c: anchor not found (upstream may have changed)',
+                  file=sys.stderr)
+        else:
+            new = ptext.replace(anchor, converter, 1)
+            # Point pixelcopy's own PyArg call at the new converter. It is
+            # passed as a bare function pointer, with no parentheses.
+            call_old = '&surfobj, _view_kind, (void *)&view_kind'
+            call_new = '&surfobj, _pc_view_kind_arg, (void *)&view_kind'
+            if call_old not in new:
+                print('pixelcopy.c: converter call site not found',
+                      file=sys.stderr)
+            else:
+                new = new.replace(call_old, call_new, 1)
+                pc.write_text(new)
+                print(f'patched {pc}: added _pc_view_kind_arg and pointed '
+                      f'surface_to_array at it')
