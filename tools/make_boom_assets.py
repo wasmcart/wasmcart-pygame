@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Rebuild doom_py's art from CC0 sources.
+Rebuild boom_py's art from CC0 sources.
 
 The example shipped ~18 MB of textures, sprites and audio with no
 provenance -- almost certainly not redistributable. Everything is replaced
@@ -11,12 +11,12 @@ Kenney assets are used from the "Game Assets All-in-1" bundle. Their licence
 permits redistributing individual assets; it asks that the bundle itself not
 be redistributed, which this does not do.
 
-Run:  python3 tools/make_doom_assets.py [path-to-kenney-bundle]
+Run:  python3 tools/make_boom_assets.py [path-to-kenney-bundle]
 """
 import os, sys, struct, zlib, math, shutil, random
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RES = os.path.join(HERE, 'examples/doom_py/resources')
+RES = os.path.join(HERE, 'examples/boom_py/resources')
 KENNEY = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser(
     '~/Downloads/Kenney Game Assets All-in-1 3.6.0')
 

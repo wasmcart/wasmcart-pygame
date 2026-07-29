@@ -53,7 +53,7 @@ Eight prebuilt carts are attached to the
 download one and run it. No Python, no pygame, no build:
 
 ```bash
-npx wasmcart doom_py.wasc
+npx wasmcart boom_py.wasc
 ```
 
 Each cart carries CPython 3.13, pygame-ce, and the game's own code and assets.
@@ -382,8 +382,8 @@ wasmcart-pygame/
 Nine, all verified rendering. Pack and run any of them:
 
 ```bash
-bash pack_game.sh examples/doom_py/ out/doom_py.wasc "Doom"
-npx wasmcart out/doom_py.wasc
+bash pack_game.sh examples/boom_py/ out/boom_py.wasc "Boom"
+npx wasmcart out/boom_py.wasc
 ```
 
 | Example | What it shows | `.wasc` |
@@ -395,7 +395,7 @@ npx wasmcart out/doom_py.wasc
 | `spaceshooter` | a full game port — sprite groups, collisions, HUD, powerups | 13 MB |
 | `threepy` | a three.py scene graph driving GL: lit spinning cube | 12 MB |
 | `3d_engine` | textured model, cubemap skybox, per-pixel lighting via moderngl | 12 MB |
-| `doom_py` | a raycaster: textured walls, sprite NPCs, weapon, HUD | 13 MB |
+| `boom_py` | a raycaster: textured walls, sprite NPCs, weapon, HUD | 13 MB |
 | `rumble` | gamepad rumble via `pygame.joystick.Joystick.rumble()` | 11 MB |
 | `surfarray` | per-pixel work through `pygame.surfarray`: live `pixels3d` writes, `array3d`/`blit_array`, `make_surface`, channel planes | 11 MB |
 | `surfarray_test` | the `surfarray` correctness gate: asserts exact pixel values and prints its verdict on screen | 11 MB |
