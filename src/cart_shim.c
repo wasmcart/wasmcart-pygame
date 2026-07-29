@@ -27,6 +27,7 @@
 #include "wasmcart.h"
 #include "SDL_wasmcart_video.h"
 #include "SDL_wasmcart_audio.h"
+#include "SDL_wasmcart_joystick.h"
 #include <SDL.h>
 #include <SDL_ttf.h>
 #include <SDL_image.h>
@@ -247,6 +248,48 @@ static PyObject *py_get_pad(PyObject *self, PyObject *args) {
         p->left_trigger, p->right_trigger, p->connected);
 }
 
+/*
+ * Rumble.
+ *
+ * pygame.joystick.Joystick.rumble() is the API a game should reach for, and it
+ * works: SDL's joystick driver for wasmcart routes it at the same host imports
+ * these call. These are the direct path, for a cart that wants to rumble
+ * without opening a joystick -- and, being one call deep instead of three, the
+ * one to reach for when the question is whether the ABI itself is wired up.
+ *
+ * Pad ids are 0-based and match wasmcart pad slots, NOT SDL device indices.
+ * The two agree today because the joystick driver refuses to compact its
+ * device list for exactly this reason.
+ */
+static PyObject *py_pad_has_rumble(PyObject *self, PyObject *args) {
+    int pad;
+    if (!PyArg_ParseTuple(args, "i", &pad)) return NULL;
+    if (pad < 0 || pad >= 4) Py_RETURN_FALSE;
+    return PyBool_FromLong(wc_pad_has_rumble((unsigned int)pad) ? 1 : 0);
+}
+
+static PyObject *py_pad_rumble(PyObject *self, PyObject *args) {
+    int pad;
+    float low, high;
+    unsigned int duration_ms;
+    if (!PyArg_ParseTuple(args, "iffI", &pad, &low, &high, &duration_ms))
+        return NULL;
+    if (pad < 0 || pad >= 4) Py_RETURN_FALSE;
+    /* The host clamps intensity and caps duration, so this does not
+     * pre-validate: a second clamp here would only disagree with the host on
+     * where the edges are. */
+    wc_pad_rumble((unsigned int)pad, low, high, duration_ms);
+    Py_RETURN_TRUE;
+}
+
+static PyObject *py_pad_rumble_stop(PyObject *self, PyObject *args) {
+    int pad;
+    if (!PyArg_ParseTuple(args, "i", &pad)) return NULL;
+    if (pad < 0 || pad >= 4) Py_RETURN_NONE;
+    wc_pad_rumble_stop((unsigned int)pad);
+    Py_RETURN_NONE;
+}
+
 static PyObject *py_get_time(PyObject *self, PyObject *args) {
     return Py_BuildValue("(ddI)", wc_time.time_ms, wc_time.delta_ms, wc_time.frame);
 }
@@ -431,6 +474,9 @@ static PyMethodDef wasmcart_methods[] = {
     {"fill_rect",   py_fill_rect,   METH_VARARGS, NULL},
     {"clear",       py_clear,       METH_VARARGS, NULL},
     {"get_pad",     py_get_pad,     METH_VARARGS, NULL},
+    {"pad_has_rumble", py_pad_has_rumble, METH_VARARGS, NULL},
+    {"pad_rumble",  py_pad_rumble,  METH_VARARGS, NULL},
+    {"pad_rumble_stop", py_pad_rumble_stop, METH_VARARGS, NULL},
     {"get_time",    py_get_time,    METH_NOARGS,  NULL},
     {"asset_size",  py_asset_size,  METH_VARARGS, NULL},
     {"load_asset",  py_load_asset,  METH_VARARGS, NULL},
@@ -537,8 +583,15 @@ void wc_init(void) {
     SDL_WASMCART_SetFramebuffer(wc_framebuffer, cart_width, cart_height);
     SDL_WASMCART_SetPads(wc_pads);
     SDL_WASMCART_SetKeys(wc_keys);
+    /* The joystick driver enumerates from this array at subsystem init, so it
+     * has to be pointed at the pads before SDL_Init, not after. */
+    SDL_WASMCART_SetJoystickPads(wc_pads);
     SDL_WASMCART_SetGLBlit(1);  /* All carts render through GL now */
-    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS);
+    /* SDL_INIT_JOYSTICK so pygame.joystick works against real devices --
+     * axes, buttons, hat and rumble -- rather than raising "SDL not built with
+     * joystick support". pygame.joystick.init() is a no-op once SDL has the
+     * subsystem up, so a game that calls it still behaves as upstream. */
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK);
     TTF_Init();
     IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG);
     /* Open audio device BEFORE pygame init — sdl2_wc backend hooks into

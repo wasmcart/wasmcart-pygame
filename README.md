@@ -168,18 +168,91 @@ wasmcart host reads ring buffer, plays through speakers
 
 ### Input pipeline
 
+Pad state reaches Python two ways, both live at once. A game that only reads
+the keyboard keeps working untouched; one that opens a joystick gets axes,
+buttons, a hat and rumble.
+
 ```
 Physical keyboard/gamepad
     ↓
 wasmcart host writes to wc_pads[] shared memory
     ↓
-sdl2_wc video backend PumpEvents()
-    ↓
-Translates pad buttons → SDL keyboard events
-    (D-pad → arrows, A → Return+Space, B → Escape)
-    ↓
-pygame.key.get_pressed() / pygame.event.get()
+    ├── sdl2_wc video backend PumpEvents()
+    │       ↓
+    │   Translates pad buttons → SDL keyboard events
+    │       (D-pad → arrows, A → Return+Space, B → Escape)
+    │       ↓
+    │   pygame.key.get_pressed() / pygame.event.get()
+    │
+    └── sdl2_wc joystick backend
+            ↓
+        Real SDL joystick devices (6 axes, 8 buttons, 1 hat)
+            ↓
+        pygame.joystick.Joystick(i).get_axis/get_button/get_hat
 ```
+
+### Rumble
+
+Rumble runs the opposite way to everything else: the cart drives the pad. It
+uses the standard pygame API, and the wasmcart specifics are all below the
+`pygame` line.
+
+```python
+import pygame
+pygame.init()
+pygame.joystick.init()
+
+joy = pygame.joystick.Joystick(0)
+joy.init()
+
+# low-frequency (strong) motor, high-frequency (weak) motor, duration in ms
+if joy.rumble(1.0, 0.0, 200):
+    ...   # motors driven
+else:
+    ...   # this pad has no rumble; show something instead
+
+joy.stop_rumble()
+```
+
+```
+joy.rumble(low, high, duration)
+    ↓
+SDL_JoystickRumble()
+    ↓
+sdl2_wc joystick backend Rumble()
+    ↓
+wc_pad_rumble(pad, low, high, ms)  ← wasmcart host import
+    ↓
+host's rumble handler → physical motors
+```
+
+Things worth knowing:
+
+- **Ask, do not assume.** Rumble capability is per-DEVICE. An Xbox 360 pad has
+  rumble but no trigger rumble; a keyboard-only setup has none. `rumble()`
+  returns `False` when the pad cannot do it, and a headless run (no rumble
+  handler wired) is one of those cases. Check the return value.
+- **Enumerate per frame, not at import.** Module import runs during `wc_init`,
+  before the host has written a single frame of pad state, so
+  `pygame.joystick.get_count()` is `0` there no matter what is plugged in.
+  Re-scan in your frame function; this is the same hot-plug handling an
+  upstream pygame game needs anyway.
+- **Pump events.** `pygame.event.get()` drives `SDL_JoystickUpdate`, which
+  refreshes button state and expires a finished rumble effect. A game that
+  never pumps will see stale input and a motor that keeps running.
+- **Device index equals wasmcart pad id.** The joystick backend does not
+  compact its device list, so pad slot 2 connected alone still reports a count
+  of 3 with slots 0 and 1 failing to open. That keeps the two numbering
+  schemes in agreement.
+- **The direct path.** `_wasmcart.pad_has_rumble(pad)`,
+  `_wasmcart.pad_rumble(pad, low, high, ms)` and
+  `_wasmcart.pad_rumble_stop(pad)` call the host imports without going through
+  SDL. Use `pygame.joystick` for real games; this is for a cart that wants to
+  rumble without opening a joystick, and for checking whether the ABI itself is
+  wired up.
+
+`examples/rumble/` is a working demo, and `tools/test_rumble.mjs` drives it
+headlessly with a rumble handler attached and asserts the calls arrive.
 
 ### Import hook
 
@@ -280,7 +353,7 @@ wasmcart-pygame/
 
 ## Examples
 
-Eight, all verified rendering. Pack and run any of them:
+Nine, all verified rendering. Pack and run any of them:
 
 ```bash
 bash pack_game.sh examples/doom_py/ out/doom_py.wasc "Doom"
@@ -297,13 +370,20 @@ npx wasmcart out/doom_py.wasc
 | `threepy` | a three.py scene graph driving GL: lit spinning cube | 12 MB |
 | `3d_engine` | textured model, cubemap skybox, per-pixel lighting via moderngl | 12 MB |
 | `doom_py` | a raycaster: textured walls, sprite NPCs, weapon, HUD | 13 MB |
+| `rumble` | gamepad rumble via `pygame.joystick.Joystick.rumble()` | 11 MB |
 
 Every asset is CC0 or generated for this project — see
 [`examples/ASSETS-LICENSE.md`](examples/ASSETS-LICENSE.md).
 
 ## Limitations
 
-- **Font rendering**: `pygame.font.Font(None, size)` works with the bundled FreeSansBold font. System font matching (`match_font`) is not available.
+- **Font rendering**: broken in a packed cart. `pygame.font.Font(None, size)`
+  raises `RuntimeError: can't access resource on platform`, and so does naming
+  the bundled FreeSansBold explicitly even though it IS in the archive at
+  `stdlib/pygame/freesansbold.ttf`. The examples that draw labels come out
+  wordless. Design a screen that still reads without text, as
+  `examples/rumble/` does. System font matching (`match_font`) is not available
+  either.
 - **File writing**: The `.wasc` filesystem is read-only. Save data should use the wasmcart save ABI (not yet exposed to Python).
 - **Threading**: Python threading is not available (WASM is single-threaded).
 - **Networking**: Not yet exposed to Python (wasmcart WebSocket/DataChannel ABI exists but no Python bindings).
