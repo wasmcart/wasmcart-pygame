@@ -16,11 +16,11 @@ import re, sys, pathlib
 src = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else 'vendor/pygame-ce/src_c/static.c')
 text = src.read_text()
 
-if 'wasmcart: controller_old dropped' in text:
+_static_done = 'wasmcart: controller_old dropped' in text
+if _static_done:
     print('static.c already patched')
-    raise SystemExit(0)
 
-before = text
+before = text if not _static_done else None
 text = text.replace('#include "_sdl2/controller_old.c"',
                     '/* wasmcart: controller_old dropped (deleted upstream) */')
 text = re.sub(r'^PyMODINIT_FUNC\nPyInit_controller_old\(void\);\n',
@@ -49,7 +49,44 @@ text = re.sub(r'^PyMODINIT_FUNC\nPyInit_(sdl2|mixer|audio|video)\(void\);\n',
 
 if text == before:
     print('nothing to patch (upstream may have fixed it)', file=sys.stderr)
-    raise SystemExit(0)
+else:
+    src.write_text(text)
+    print(f'patched {src}: dropped controller_old from the static build')
 
-src.write_text(text)
-print(f'patched {src}: dropped controller_old from the static build')
+
+# ---------------------------------------------------------------------------
+# rwobject.c: let a file object be a resource under Emscripten.
+#
+# pgRWops_FromObject has two branches. The ordinary one falls through to
+# pgRWops_FromFileObject, so pygame accepts any Python file-like object. The
+# __EMSCRIPTEN__ branch omits that call and raises "can't access resource on
+# platform" instead, leaving SDL_RWFromFile as the only way in.
+#
+# A wasmcart cart has no real filesystem: assets live in the .wasc and reach
+# Python through the asset shim, which hands back a BytesIO. With the fallback
+# missing, every pygame.font.Font() fails -- including Font(None, size), since
+# the bundled default font is itself an asset. Restoring the fallback is what
+# the other branch already does.
+rw = src.parent / 'rwobject.c'
+if rw.exists():
+    rtext = rw.read_text()
+    if 'wasmcart: accept file objects' in rtext:
+        print('rwobject.c already patched')
+    else:
+        anchor = """fail:
+    if (retry)
+        return RAISE(PyExc_RuntimeError, "can't access resource on platform");"""
+        replacement = """fail:
+    if (retry) {
+        /* wasmcart: accept file objects here too, exactly as the non-Emscripten
+         * branch below does. Cart assets arrive as file-like objects, not real
+         * paths, so without this every resource load fails. */
+        PyErr_Clear();
+        return pgRWops_FromFileObject(obj);
+    }"""
+        if anchor not in rtext:
+            print('rwobject.c: anchor not found (upstream may have changed)',
+                  file=sys.stderr)
+        else:
+            rw.write_text(rtext.replace(anchor, replacement, 1))
+            print(f'patched {rw}: file objects usable as resources')

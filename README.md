@@ -377,13 +377,10 @@ Every asset is CC0 or generated for this project — see
 
 ## Limitations
 
-- **Font rendering**: broken in a packed cart. `pygame.font.Font(None, size)`
-  raises `RuntimeError: can't access resource on platform`, and so does naming
-  the bundled FreeSansBold explicitly even though it IS in the archive at
-  `stdlib/pygame/freesansbold.ttf`. The examples that draw labels come out
-  wordless. Design a screen that still reads without text, as
-  `examples/rumble/` does. System font matching (`match_font`) is not available
-  either.
+- **Fonts**: `pygame.font.Font(None, size)` and `Font("path.ttf", size)` both
+  work, including the bundled FreeSansBold. `SysFont` resolves to the bundled
+  font rather than matching a system one, since a cart has no font directory
+  to search; `match_font` is not available for the same reason.
 - **File writing**: The `.wasc` filesystem is read-only. Save data should use the wasmcart save ABI (not yet exposed to Python).
 - **Threading**: Python threading is not available (WASM is single-threaded).
 - **Networking**: Not yet exposed to Python (wasmcart WebSocket/DataChannel ABI exists but no Python bindings).
