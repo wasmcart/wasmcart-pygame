@@ -1,8 +1,9 @@
-# Asset licensing for the examples
+# Asset licensing for the examples and ports
 
-**Everything in `examples/` is freely redistributable.** No example ships
-content under a non-commercial or no-derivatives licence, and nothing here
-requires permission to fork or republish.
+**Everything in `examples/` and `ports/` is freely redistributable.** Nothing
+ships under a non-commercial or no-derivatives licence, nothing is a
+screenshot or extract of a commercial game, and nothing here requires
+permission to fork or republish.
 
 Three examples originally shipped ~68 MB of third-party art with no
 provenance -- Doom wall textures, a licensed cat model, photographic
@@ -51,3 +52,20 @@ here against the wasmcart runtime.
 `threepy` shipped 5.5 MB of textures (earth, moon, sun, lava…) that no code
 path loads -- it renders an untextured spinning cube. Deleted rather than
 replaced.
+
+## `ports/solarwolf`
+
+SolarWolf is Pete Shinners' own game, LGPL, and its art and music ship under
+that licence: graphics by Eero Tamminen, music by "theGREENzebra". All of it
+is redistributable and all of it is here byte-identical to upstream, except
+for one file.
+
+| Excluded | Why | Replaced by |
+|---|---|---|
+| `data/oldsolarfox.png` | a screenshot of the Atari 2600 commercial game, referenced once from `gamecreds.py` | `tools/make_solarwolf_assets.py` -- an original stylised retro console at the same 235x210 |
+
+The generator uses no RNG, so a rebuild is byte-identical. The upstream
+screenshot is not in this repo's history.
+
+`ports/solarwolf/lgpl.txt` is upstream's own licence text, kept so the LGPL
+attribution travels with the code it covers.

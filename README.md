@@ -30,8 +30,12 @@ my_game.wasc (ZIP)
 | `pygame.Surface` + `blit()` | Working (compositing, colorkey, alpha) |
 | `pygame.sprite.*` | Working (Sprite, Group, collide, groupcollide) |
 | `pygame.transform.*` | Working (rotate, scale, flip) |
-| `pygame.image.load()` | Working (PNG, JPG, BMP via stb_image) |
-| `pygame.mixer.Sound()` | Working (WAV, OGG via SDL_mixer) |
+| `pygame.image.load()` | Working (PNG, JPG, GIF, BMP; paletted images keep their palette) |
+| `Surface.get_palette()` / `set_palette()` | Working (palette-swap recolouring) |
+| `pygame.mixer.Sound()` | Working (WAV, OGG via SDL_mixer; `play()` returns a Channel) |
+| `pygame.mixer.music` | Working (OGG + `.xm`/`.mod` trackers, streamed from cart assets) |
+| `pygame.time.get_ticks()` / `Clock` | Working (frame-derived clock, see below) |
+| `threading.Thread` | Cooperative: `start()` runs the target inline, `is_alive()` is False |
 | `pygame.font.Font()` | Working (with bundled .ttf) |
 | `pygame.key.get_pressed()` | Working (via wasmcart pad → SDL key translation) |
 | `pygame.event.get()` | Working |
@@ -179,8 +183,9 @@ wasmcart host writes to wc_pads[] shared memory
     ↓
     ├── sdl2_wc video backend PumpEvents()
     │       ↓
-    │   Translates pad buttons → SDL keyboard events
-    │       (D-pad → arrows, A → Return+Space, B → Escape)
+    │   Translates pad buttons → SDL keyboard/mouse events
+    │       (D-pad → arrows, START → Return, SELECT → Escape,
+    │        X → Space, A/B → left/right mouse click)
     │       ↓
     │   pygame.key.get_pressed() / pygame.event.get()
     │
@@ -253,6 +258,27 @@ Things worth knowing:
 
 `examples/rumble/` is a working demo, and `tools/test_rumble.mjs` drives it
 headlessly with a rumble handler attached and asserts the calls arrive.
+
+### The clock
+
+`pygame.time.get_ticks()`, `Clock.tick(fps)` and `Clock.get_fps()` all read
+SDL's tick source, and in a cart that is **not** wall-clock time. The host
+decides when `wc_render` is called: a headless `--frames` screenshot run goes
+back to back, far faster than real time, and a dragged window or a paused
+debugger goes far slower.
+
+So the tick source advances one nominal frame per `wc_render`. Game time is a
+function of frames rendered, which means a cart behaves identically headless
+and in a window, and a screenshot at frame N shows what frame N should show.
+
+This matters more than it sounds. On wall-clock time, a headless run reported
+384 ms after 300 frames instead of 7500: every timed transition stalled and
+every delta-scaled movement stood still, while the game rendered its first
+screen perfectly, forever. A cart that looks like it is running and is frozen
+in game-time is exactly the failure that reads as success.
+
+Audio pumping still uses the host's real delta, because that has to track the
+wall clock the speaker runs on.
 
 ### Import hook
 
@@ -375,6 +401,48 @@ npx wasmcart out/doom_py.wasc
 Every asset is CC0 or generated for this project — see
 [`examples/ASSETS-LICENSE.md`](examples/ASSETS-LICENSE.md).
 
+## Ports
+
+Existing finished games running on this runtime unmodified. Where an example
+is written to fit, a port is the thing that finds out what is actually
+missing.
+
+| Port | What it is | Game code changed |
+|---|---|---|
+| [`ports/solarwolf`](ports/solarwolf/README.md) | Pete Shinners' SolarWolf, pygame's own reference game, 6,696 lines, 60 levels | 1 of 38 modules (the loop inversion) |
+
+SolarWolf found eight runtime gaps, all fixed here rather than worked around
+in the game: missing `pygame.ver`, paletted images flattened to RGBA, no GIF
+decoder, `threading.Thread.start()` raising, `mixer.music` being a silent
+no-op, a wall-clock instead of frame-derived clock, a missing `urllib` taking
+down the boot, and a resolution scraper blind to `SIZE = 800, 600`. Its README
+documents each one.
+
+### Testing a port
+
+Frame counts are not evidence. A cart that boots, returns frames and renders
+nothing reports success exactly as loudly as one that works.
+
+```bash
+# drive input on a schedule and screenshot specific frames
+node tools/drive_cart.mjs out/solarwolf.wasc --frames 900 \
+  --script "120:;130:START;140:;300:START;310:" \
+  --shots "110:menu.png,270:play.png"
+
+# then check the pixels
+node tools/check_render.mjs play.png
+```
+
+`drive_cart.mjs` exists because `wasmcart --frames N --shot out.png` cannot
+press a button, so every screenshot it can take is of the title screen. It
+drives the same `CartHost` the player does, including the GL readback. A
+pygame cart blits through GL, so reading CartHost's 2D framebuffer gives a
+black PNG for a cart that is rendering perfectly.
+
+`check_render.mjs` reports distinct colours and ink coverage. Verified against
+a control: a build with `pygame.display.update()` removed runs the same 700
+frames and comes back `colors=1 ink=0.00%`.
+
 ## Limitations
 
 - **Fonts**: `pygame.font.Font(None, size)` and `Font("path.ttf", size)` both
@@ -382,8 +450,20 @@ Every asset is CC0 or generated for this project — see
   font rather than matching a system one, since a cart has no font directory
   to search; `match_font` is not available for the same reason.
 - **File writing**: The `.wasc` filesystem is read-only. Save data should use the wasmcart save ABI (not yet exposed to Python).
-- **Threading**: Python threading is not available (WASM is single-threaded).
-- **Networking**: Not yet exposed to Python (wasmcart WebSocket/DataChannel ABI exists but no Python bindings).
+- **Threading**: `threading.Thread` imports and `start()` works, but
+  cooperatively: the target runs inline on `start()` and `is_alive()` is
+  False from the first poll. That covers the common loading-screen idiom
+  (run the loader on a thread, poll from the draw loop); it does not cover a
+  thread meant to run *concurrently* with the draw loop. WASM here is
+  single-threaded and real threads are not available.
+- **Networking**: Not available. `urllib` imports and `urllib.parse` is real,
+  but any fetch raises `URLError`. A cart has no sockets, and the wasmcart
+  WebSocket/DataChannel ABI has no Python bindings yet. This is deliberate:
+  a game with an optional online feature should reach its `except URLError`,
+  not die on the import.
+- **`pygame.surfarray`**: Not built. The module is not compiled into
+  `cart.wasm`; there is a numpy shim in `stdlib_extra/numpy/` if it is ever
+  wired up.
 - **ASYNCIFY**: Standard `while True` game loops require ASYNCIFY in the link step (adds ~15% binary size). The `_wc_frame()` callback pattern avoids this.
 
 ## Size

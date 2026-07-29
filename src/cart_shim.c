@@ -351,11 +351,20 @@ static PyObject *py_clear_err(PyObject *self, PyObject *args) {
  * Decodes PNG/JPG from .wasc asset using stb_image, creates pygame.Surface
  * via pygame.image.frombuffer(). Bypasses SDL_image entirely.
  */
+/* STBI_ONLY_GIF: GIF is not an exotic format for a pygame game -- it is what
+ * anything written before PNG-with-alpha became universal uses for sprites
+ * with a colorkey. SolarWolf ships ten of them (HUD, starfield, menu badges),
+ * and without a GIF decoder each one raised "unknown image type" at load and
+ * the game died during resource loading. SDL_image is linked but its
+ * emscripten port compiles in only the formats named by SDL2_IMAGE_FORMATS,
+ * so it was no help either; stb has a GIF decoder already and enabling it
+ * costs a few KB. */
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG
 #define STBI_ONLY_BMP
+#define STBI_ONLY_GIF
 #include "stb_image.h"
 
 static PyObject *py_load_image(PyObject *self, PyObject *args) {
@@ -468,6 +477,109 @@ static PyObject *py_snd_vol(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+/*
+ * Streaming music (pygame.mixer.music).
+ *
+ * pygame's own music.load() goes through SDL_RWFromFile, which is C and never
+ * sees the Python-level asset shim, so it cannot reach a file inside the
+ * .wasc. It used to be patched to a no-op -- every cart was silent and no
+ * error said so. These load the bytes out of the asset and hand SDL_mixer an
+ * RWops over them.
+ *
+ * The buffer must outlive the Mix_Music: SDL_mixer streams from it rather
+ * than decoding up front, which matters most for the tracker formats where
+ * the whole module stays resident. Only one music track plays at a time, so
+ * the previous track's buffer is freed on the next load.
+ */
+static Mix_Music *current_music = NULL;
+static void *current_music_buf = NULL;
+
+static PyObject *py_music_load(PyObject *self, PyObject *args) {
+    const char *path;
+    Py_ssize_t path_len;
+    if (!PyArg_ParseTuple(args, "s#", &path, &path_len)) return NULL;
+
+    int size = wc_asset_size(path, (unsigned int)path_len);
+    if (size < 0) {
+        PyErr_Format(PyExc_FileNotFoundError, "Music not found: %s", path);
+        return NULL;
+    }
+
+    void *buf = malloc(size);
+    if (!buf) return PyErr_NoMemory();
+    wc_load_asset(path, (unsigned int)path_len, buf, size);
+
+    SDL_RWops *rw = SDL_RWFromConstMem(buf, size);
+    if (!rw) { free(buf); PyErr_SetString(PyExc_RuntimeError, SDL_GetError()); return NULL; }
+
+    Mix_Music *mus = Mix_LoadMUS_RW(rw, 1);
+    if (!mus) {
+        free(buf);
+        PyErr_Format(PyExc_RuntimeError, "Mix_LoadMUS failed: %s", Mix_GetError());
+        return NULL;
+    }
+
+    if (current_music) Mix_FreeMusic(current_music);
+    if (current_music_buf) free(current_music_buf);
+    current_music = mus;
+    current_music_buf = buf;
+    Py_RETURN_NONE;
+}
+
+static PyObject *py_music_play(PyObject *self, PyObject *args) {
+    int loops = 0;
+    double start = 0.0;
+    if (!PyArg_ParseTuple(args, "|id", &loops, &start)) return NULL;
+    if (!current_music) Py_RETURN_NONE;
+    /* pygame: loops=-1 is forever, loops=n repeats n extra times.
+     * SDL_mixer: loops=-1 is forever, loops=n plays n times total. */
+    int mix_loops = (loops < 0) ? -1 : loops + 1;
+    if (Mix_PlayMusic(current_music, mix_loops) < 0) {
+        PyErr_Format(PyExc_RuntimeError, "Mix_PlayMusic failed: %s", Mix_GetError());
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *py_music_stop(PyObject *self, PyObject *args) {
+    Mix_HaltMusic();
+    Py_RETURN_NONE;
+}
+
+static PyObject *py_music_fadeout(PyObject *self, PyObject *args) {
+    int ms = 0;
+    if (!PyArg_ParseTuple(args, "i", &ms)) return NULL;
+    Mix_FadeOutMusic(ms);
+    Py_RETURN_NONE;
+}
+
+static PyObject *py_music_vol(PyObject *self, PyObject *args) {
+    float vol;
+    if (!PyArg_ParseTuple(args, "f", &vol)) return NULL;
+    if (vol < 0.0f) vol = 0.0f;
+    if (vol > 1.0f) vol = 1.0f;
+    Mix_VolumeMusic((int)(vol * MIX_MAX_VOLUME));
+    Py_RETURN_NONE;
+}
+
+static PyObject *py_music_get_vol(PyObject *self, PyObject *args) {
+    return PyFloat_FromDouble((double)Mix_VolumeMusic(-1) / MIX_MAX_VOLUME);
+}
+
+static PyObject *py_music_busy(PyObject *self, PyObject *args) {
+    return PyBool_FromLong(Mix_PlayingMusic() && !Mix_PausedMusic());
+}
+
+static PyObject *py_music_pause(PyObject *self, PyObject *args) {
+    Mix_PauseMusic();
+    Py_RETURN_NONE;
+}
+
+static PyObject *py_music_unpause(PyObject *self, PyObject *args) {
+    Mix_ResumeMusic();
+    Py_RETURN_NONE;
+}
+
 static PyMethodDef wasmcart_methods[] = {
     {"get_fb_info", py_get_fb_info, METH_NOARGS,  NULL},
     {"set_pixel",   py_set_pixel,   METH_VARARGS, NULL},
@@ -489,6 +601,15 @@ static PyMethodDef wasmcart_methods[] = {
     {"_snd_play",   py_snd_play,    METH_VARARGS, NULL},
     {"_snd_stop",   py_snd_stop,    METH_VARARGS, NULL},
     {"_snd_vol",    py_snd_vol,     METH_VARARGS, NULL},
+    {"_mus_load",   py_music_load,  METH_VARARGS, NULL},
+    {"_mus_play",   py_music_play,  METH_VARARGS, NULL},
+    {"_mus_stop",   py_music_stop,  METH_NOARGS,  NULL},
+    {"_mus_fadeout",py_music_fadeout, METH_VARARGS, NULL},
+    {"_mus_vol",    py_music_vol,   METH_VARARGS, NULL},
+    {"_mus_get_vol",py_music_get_vol, METH_NOARGS, NULL},
+    {"_mus_busy",   py_music_busy,  METH_NOARGS,  NULL},
+    {"_mus_pause",  py_music_pause, METH_NOARGS,  NULL},
+    {"_mus_unpause",py_music_unpause, METH_NOARGS, NULL},
     {NULL, NULL, 0, NULL}
 };
 
@@ -498,6 +619,71 @@ static struct PyModuleDef wasmcart_module = {
 
 PyMODINIT_FUNC PyInit__wasmcart(void) {
     return PyModule_Create(&wasmcart_module);
+}
+
+/* ── SDL clock override ──────────────────────────────────────────── */
+
+/*
+ * SDL_GetTicks/SDL_GetTicks64 report wall-clock time, which is the wrong
+ * clock for a cart. The host owns the frame cadence -- it decides when
+ * wc_render is called, and it may run frames faster than real time (a
+ * headless --frames screenshot run) or slower (a paused debugger). SDL's
+ * wall clock tracks none of that.
+ *
+ * The visible damage is anything a game times in milliseconds. Everything
+ * that reads the clock does so through here:
+ *
+ *   pygame.time.get_ticks()      -> SDL_GetTicks
+ *   pygame.time.Clock.tick(fps)  -> SDL_GetTicks deltas + SDL_Delay
+ *   Clock.get_fps()
+ *
+ * In a headless run wc_render is called back-to-back, so wall time barely
+ * moves: after 300 frames get_ticks() read 384 ms instead of 7500. Every
+ * timed transition stalled -- SolarWolf's splash waits 1200 ms before
+ * handing off to the menu and simply never did -- and Clock.tick(40)
+ * returned 0 or 1 ms, so every game that scales movement by the frame delta
+ * stood still while rendering perfectly. A cart that looks like it is
+ * running and is frozen in game-time is exactly the failure that reads as
+ * success.
+ *
+ * So the tick source becomes the host's frame clock. wc_time.time_ms
+ * advances one frame's worth per wc_render regardless of how fast the host
+ * chooses to call it, which makes game time a function of frames rendered.
+ * A game paced this way behaves identically headless and in a window, and a
+ * screenshot at frame N shows what frame N should show.
+ */
+/* Game-time accumulator, advanced once per wc_render.
+ *
+ * The rule is one frame of game time per frame rendered. Not "however long
+ * that frame took": a host may run frames far faster than real time (a
+ * headless --frames screenshot pass) or far slower (a window being dragged,
+ * a backgrounded tab, a debugger), and in both cases the game should see the
+ * same steady cadence. That is what makes a screenshot at frame N
+ * reproducible, and what stops a slow frame from teleporting everything that
+ * moves.
+ *
+ * Deriving it from wc_time.delta_ms with a floor was tried first and is
+ * subtly wrong: a host that renders a heavy frame in 1.7 ms of wall time
+ * passes any floor below that and the clock advances 1.7 ms, so the game
+ * still runs ~10x slow while looking correct frame to frame. The nominal
+ * step is unconditional for that reason.
+ *
+ * The host's real delta is still honoured for one thing -- audio pumping,
+ * further down -- because that has to match the sample rate of the wall
+ * clock the speaker runs on, not game time. */
+static double frame_clock_ms = 0.0;
+#define FRAME_STEP_MS (1000.0 / 60.0)
+
+static uint64_t sdl_ticks_ms(void) {
+    return (uint64_t)frame_clock_ms;
+}
+
+uint32_t __wrap_SDL_GetTicks(void) {
+    return (uint32_t)sdl_ticks_ms();
+}
+
+uint64_t __wrap_SDL_GetTicks64(void) {
+    return sdl_ticks_ms();
 }
 
 /* ── SDL_Delay override (ASYNCIFY yield point) ───────────────────── */
@@ -713,6 +899,21 @@ void wc_init(void) {
         "            setattr(pygame, pymod, mod)\n"
         "        except Exception as _e:\n"
         "            _wasmcart.log(f'  pygame.{pymod}: {_e}')\n"
+        "    # Upstream pygame/__init__.py does `from pygame.version import *`,\n"
+        "    # which is where pygame.ver / pygame.vernum / pygame.rev come from.\n"
+        "    # BUILD_STATIC has no __init__.py, so the version module was\n"
+        "    # imported and then never re-exported: `pygame.ver` raised\n"
+        "    # AttributeError. Games version-gate on it (SolarWolf's txt.py does\n"
+        "    # `if pygame.ver <= '1.6.1'` at import time), so a missing ver is a\n"
+        "    # hard boot failure, not a cosmetic gap.\n"
+        "    try:\n"
+        "        _v = sys.modules.get('pygame.version')\n"
+        "        if _v is not None:\n"
+        "            for _a in getattr(_v, '__all__', ('ver', 'vernum', 'rev', 'SDL')):\n"
+        "                if hasattr(_v, _a):\n"
+        "                    setattr(pygame, _a, getattr(_v, _a))\n"
+        "    except Exception as _e:\n"
+        "        _wasmcart.log(f'  pygame.version export: {_e}')\n"
         "    # Wrap pygame.init to clear stale C exceptions after init\n"
         "    _orig_pg_init = pygame.init\n"
         "    def _safe_pg_init():\n"
@@ -767,6 +968,22 @@ void wc_init(void) {
         "    return None\n"
         "\n"
         "# Patch pygame.image.load\n"
+        "#\n"
+        "# Two decoders, in this order:\n"
+        "#\n"
+        "#   1. pygame's own image.load over a BytesIO. That runs SDL_image,\n"
+        "#      which returns the surface in the file's NATIVE format -- an\n"
+        "#      8-bit indexed surface for a paletted PNG or a GIF, palette\n"
+        "#      intact.\n"
+        "#   2. _wasmcart.load_image (stb_image), which always decodes to RGBA.\n"
+        "#\n"
+        "# The order used to be the other way round, and the palette was the\n"
+        "# casualty: every image arrived as 32-bit RGBA, so get_palette() raised\n"
+        "# 'Surface has no palette to get' and set_palette() did nothing.\n"
+        "# Palette-swap recolouring is not a fringe trick -- it is how a sprite\n"
+        "# sheet from this era makes its variants (SolarWolf tints one box sheet\n"
+        "# four ways, and died in resource loading on the first get_palette).\n"
+        "# stb stays as the fallback for anything SDL_image refuses.\n"
         "try:\n"
         "    import pygame.image\n"
         "    _orig_img_load = pygame.image.load\n"
@@ -775,6 +992,16 @@ void wc_init(void) {
         "            p = path.replace('\\\\', '/').lstrip('./')\n"
         "            for try_path in (f'assets/{p}', p):\n"
         "                if _wasmcart.asset_size(try_path) >= 0:\n"
+        "                    data = _wasmcart.load_asset(try_path)\n"
+        "                    if data is not None:\n"
+        "                        try:\n"
+        "                            _wasmcart._clear_err()\n"
+        "                            surf = _orig_img_load(_io.BytesIO(data),\n"
+        "                                                  namehint or p)\n"
+        "                            _wasmcart._clear_err()\n"
+        "                            return surf\n"
+        "                        except Exception:\n"
+        "                            _wasmcart._clear_err()\n"
         "                    _wasmcart._clear_err()\n"
         "                    return _wasmcart.load_image(try_path)\n"
         "        _wasmcart._clear_err()\n"
@@ -795,23 +1022,70 @@ void wc_init(void) {
         "                        self._ptr = _wasmcart.load_sound(try_path)\n"
         "                        return\n"
         "        def play(self, loops=0, maxtime=0, fade_ms=0):\n"
-        "            if self._ptr: _wasmcart._snd_play(self._ptr, loops)\n"
+        "            # Upstream Sound.play() returns the Channel it grabbed, and\n"
+        "            # games use it: `chan = snd.play(); chan.set_volume(l, r)` is\n"
+        "            # how stereo panning is done. Returning None made every such\n"
+        "            # call site fall into its own error path or crash.\n"
+        "            if not self._ptr:\n"
+        "                return None\n"
+        "            ch = _wasmcart._snd_play(self._ptr, loops)\n"
+        "            if ch is None or ch < 0:\n"
+        "                return None\n"
+        "            try:\n"
+        "                return pygame.mixer.Channel(ch)\n"
+        "            except Exception:\n"
+        "                return None\n"
         "        def stop(self):\n"
         "            if self._ptr: _wasmcart._snd_stop(self._ptr)\n"
+        "        def fadeout(self, ms):\n"
+        "            self.stop()\n"
         "        def set_volume(self, vol):\n"
         "            if self._ptr: _wasmcart._snd_vol(self._ptr, vol)\n"
         "        def get_volume(self): return 1.0\n"
+        "        def get_length(self): return 0.0\n"
+        "        def get_num_channels(self): return 0\n"
         "    pygame.mixer.Sound = _WascSound\n"
         "    pygame.Sound = _WascSound\n"
         "except: pass\n"
         "\n"
-        "# Patch pygame.mixer.music.load — skip for now (music is optional)\n"
+        "# Patch pygame.mixer.music to stream from .wasc assets.\n"
+        "#\n"
+        "# pygame's music.load() resolves the path through SDL_RWFromFile, which\n"
+        "# is C and never sees the asset shim, so it cannot open anything inside\n"
+        "# the cart. This used to be patched to a silent no-op: music.load()\n"
+        "# succeeded, music.play() did nothing, and no error was raised -- every\n"
+        "# cart was silently mute. These route through Mix_LoadMUS_RW on bytes\n"
+        "# pulled out of the .wasc instead.\n"
         "try:\n"
-        "    _orig_music_load = pygame.mixer.music.load\n"
+        "    _mus = pygame.mixer.music\n"
         "    def _wasc_music_load(path, *args, **kwargs):\n"
-        "        pass  # Music loading not yet supported\n"
-        "    pygame.mixer.music.load = _wasc_music_load\n"
-        "except: pass\n"
+        "        if isinstance(path, str):\n"
+        "            p = path.replace('\\\\', '/').lstrip('./')\n"
+        "            for try_path in (f'assets/{p}', p):\n"
+        "                if _wasmcart.asset_size(try_path) >= 0:\n"
+        "                    _wasmcart._mus_load(try_path)\n"
+        "                    _wasmcart._clear_err()\n"
+        "                    return\n"
+        "        raise pygame.error(f'music file not found: {path}')\n"
+        "    _mus.load = _wasc_music_load\n"
+        "    _mus.play = lambda loops=0, start=0.0, fade_ms=0: _wasmcart._mus_play(loops, start)\n"
+        "    _mus.stop = lambda: _wasmcart._mus_stop()\n"
+        "    _mus.fadeout = lambda ms: _wasmcart._mus_fadeout(ms)\n"
+        "    _mus.set_volume = lambda v: _wasmcart._mus_vol(v)\n"
+        "    _mus.get_volume = lambda: _wasmcart._mus_get_vol()\n"
+        "    _mus.get_busy = lambda: _wasmcart._mus_busy()\n"
+        "    _mus.pause = lambda: _wasmcart._mus_pause()\n"
+        "    _mus.unpause = lambda: _wasmcart._mus_unpause()\n"
+        "    _mus.unload = lambda: _wasmcart._mus_stop()\n"
+        "    _mus.rewind = lambda: None\n"
+        "    # set_endevent posts a user event when a track finishes. Nothing\n"
+        "    # drives SDL_mixer's finished-music hook into pygame's event queue\n"
+        "    # here, so accept and ignore it rather than raising: games use it\n"
+        "    # for playlist advance, which degrades to the track just looping.\n"
+        "    _mus.set_endevent = lambda *a: None\n"
+        "    _mus.get_endevent = lambda: 0\n"
+        "except Exception as _e:\n"
+        "    _wasmcart.log(f'music shim: {_e}')\n"
         "\n"
         "# Patch pygame.font.Font to load from assets.\n"
         "#\n"
@@ -922,6 +1196,56 @@ void wc_init(void) {
     );
     if (PyErr_Occurred()) PyErr_Clear();
 
+    /* Cooperative threading.
+     *
+     * WASM here is single-threaded, so _thread.start_new_thread raises
+     * RuntimeError('can't start new thread') and Thread.start() propagates
+     * it. That is not a niche API: the common pygame idiom for a loading
+     * screen is to run the resource loader on a background thread and poll
+     * is_alive() from the draw loop, which is exactly what SolarWolf's
+     * GameInit does. Without this the game raises before drawing a frame.
+     *
+     * So start() runs the target inline and returns a thread that is already
+     * finished. Semantics a caller can rely on:
+     *   - the target runs exactly once, on start()
+     *   - is_alive() is False from the first poll, so a progress bar snaps to
+     *     done rather than animating; correctness over cosmetics
+     *   - an exception in the target propagates out of start(), where a real
+     *     thread would print it and keep going. Callers that already wrap the
+     *     target body in try/except (SolarWolf does) see no difference.
+     *   - join() is a no-op that returns immediately
+     * A game that instead expects a thread to run CONCURRENTLY with the draw
+     * loop -- streaming, a watchdog, a producer -- is not served by this and
+     * cannot be until the runtime grows real threads. */
+    PyRun_SimpleString(
+        "import _wasmcart\n"
+        "try:\n"
+        "    import threading\n"
+        "    def _wasc_thread_start(self):\n"
+        "        if self._started.is_set():\n"
+        "            raise RuntimeError('threads can only be started once')\n"
+        "        self._started.set()\n"
+        "        try:\n"
+        "            # Thread.run() already drops _target/_args/_kwargs in its\n"
+        "            # own finally, so do not delete them again here.\n"
+        "            self.run()\n"
+        "        finally:\n"
+        "            with threading._active_limbo_lock:\n"
+        "                threading._limbo.pop(self, None)\n"
+        "    def _wasc_thread_join(self, timeout=None):\n"
+        "        if not self._started.is_set():\n"
+        "            raise RuntimeError('cannot join thread before it is started')\n"
+        "        return None\n"
+        "    def _wasc_thread_is_alive(self):\n"
+        "        return False\n"
+        "    threading.Thread.start = _wasc_thread_start\n"
+        "    threading.Thread.join = _wasc_thread_join\n"
+        "    threading.Thread.is_alive = _wasc_thread_is_alive\n"
+        "except Exception as _e:\n"
+        "    _wasmcart.log(f'threading shim: {_e}')\n"
+    );
+    if (PyErr_Occurred()) PyErr_Clear();
+
     int rc = PyRun_SimpleString(boot_script);
     if (rc != 0) {
         WC_LOG("ERROR: boot script failed");
@@ -963,6 +1287,12 @@ void wc_init(void) {
 __attribute__((export_name("wc_render")))
 void wc_render(void) {
     if (!initialized) return;
+
+    /* Advance the game clock by one frame. See sdl_ticks_ms above: this, not
+     * wall time, is what SDL_GetTicks reports, so pygame.time.get_ticks() and
+     * Clock.tick() measure frames rendered rather than seconds elapsed on
+     * whatever machine happens to be hosting. */
+    frame_clock_ms += FRAME_STEP_MS;
 
     if (use_callback) {
         /* Pump audio — write enough samples to cover this frame plus a small

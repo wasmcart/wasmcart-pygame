@@ -84,6 +84,21 @@ def scan(text):
         if plausible(w, h):
             return w, h
 
+    # SIZE = 800, 600  /  SCREEN_SIZE = (800, 600)  -- the pair is named as one
+    # value rather than split into WIDTH and HEIGHT. SolarWolf writes exactly
+    # this (`size = 800, 600`, passed straight to set_mode), and missing it is
+    # not a cosmetic slip: the manifest then declares the shim default, the
+    # host sizes its window and GL context to that, and the game renders into
+    # a corner of it. Anchored to a whole line so a call argument elsewhere
+    # cannot match.
+    m = re.search(
+        r'^\s*(?:SCREEN_|WINDOW_|DISPLAY_)?SIZE\s*=\s*\(?\s*(\d+)\s*,\s*(\d+)\s*\)?\s*$',
+        text, re.M | re.I)
+    if m:
+        w, h = int(m.group(1)), int(m.group(2))
+        if plausible(w, h):
+            return w, h
+
     # separate WIDTH = / HEIGHT = assignments
     mw = re.search(r'^\s*WIDTH\s*=\s*(\d+)\s*$', text, re.M)
     mh = re.search(r'^\s*HEIGHT\s*=\s*(\d+)\s*$', text, re.M)

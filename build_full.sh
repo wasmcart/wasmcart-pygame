@@ -201,13 +201,17 @@ emcc -O2 \
     -sTOTAL_STACK=4194304 \
     -sUSE_SDL=0 \
     -sUSE_SDL_MIXER=2 \
+    -sSDL2_MIXER_FORMATS="['ogg','mod']" \
     -sUSE_SDL_IMAGE=2 \
+    -sSDL2_IMAGE_FORMATS="['png','jpg','gif']" \
     -sUSE_FREETYPE=1 \
     -sUSE_ZLIB \
     -sUSE_BZIP2 \
     --no-entry \
     -sEXPORTED_FUNCTIONS='["_wc_get_info","_wc_init","_wc_render"]' \
     -Wl,--wrap=SDL_Delay \
+    -Wl,--wrap=SDL_GetTicks \
+    -Wl,--wrap=SDL_GetTicks64 \
     $LIBS \
     -o out/cart.wasm
 
