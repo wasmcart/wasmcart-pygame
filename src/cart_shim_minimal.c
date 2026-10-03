@@ -113,7 +113,8 @@ static PyObject *py_clear(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
-/* Get pad state: get_pad(index) -> (buttons, lx, ly, rx, ry, lt, rt, connected) */
+/* Get pad state: get_pad(index) -> (buttons, lx, ly, rx, ry, lt, rt, connected)
+ * buttons is a u32 WC_BTN_* mask; lt/rt are 0..32767 (WC_TRIGGER_MAX). */
 static PyObject *py_get_pad(PyObject *self, PyObject *args) {
     int idx;
     if (!PyArg_ParseTuple(args, "i", &idx))
@@ -121,9 +122,12 @@ static PyObject *py_get_pad(PyObject *self, PyObject *args) {
     if (idx < 0 || idx >= 4)
         Py_RETURN_NONE;
     wc_pad_t *p = &pads[idx];
-    return Py_BuildValue("(Hhhhhbbi)",
-        p->buttons, p->left_x, p->left_y, p->right_x, p->right_y,
-        p->left_trigger, p->right_trigger, p->connected);
+    /* ABI v4: buttons is uint32 (bits 14-20 are GUIDE..TOUCHPAD, so "H"
+     * would truncate them) and the triggers are int16 0..32767 (WC_TRIGGER_MAX),
+     * so "b" would wrap them. I = unsigned int, h = short, i = int. */
+    return Py_BuildValue("(Ihhhhhhi)",
+        (unsigned int)p->buttons, p->left_x, p->left_y, p->right_x, p->right_y,
+        p->left_trigger, p->right_trigger, (int)p->connected);
 }
 
 /* Get time: get_time() -> (time_ms, delta_ms, frame) */
