@@ -352,6 +352,10 @@ bash pack_game.sh path/to/game/ output.wasc "Game Name"
   `email`, `sqlite3` and friends are dropped — about 42 MB per cart)
 - pygame Python helper modules (sprite, colordict, etc.)
 
+The cart's version is your game's: its directory's git checkout gives it (at a
+clean `v1.2.0` tag `1.2.0`, anywhere else `1.2.0-dev.g<commit>`; wasmcart 0.40.0
+or later beside this repo). `CART_VERSION=1.2.0` sets it by hand.
+
 ## Project Structure
 
 ```

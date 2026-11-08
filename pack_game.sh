@@ -142,10 +142,14 @@ echo "Stdlib: $(find "$TMPDIR/stdlib" -name "*.py" | wc -l) .py files"
 RES_ARGS=""
 [ -n "$RES_W" ] && [ -n "$RES_H" ] && RES_ARGS="--width $RES_W --height $RES_H"
 
+# The cart's version is the GAME's: wasmcart-pack (0.40.0 or later) reads it
+# from the game directory's git checkout (the tag at a clean v<semver> tag,
+# else <last tag>-dev.g<commit>), not from this SDK's. CART_VERSION sets it.
 node "$HERE/../wasmcart/bin/wasmcart-pack.js" \
     --wasm "$CART_WASM" \
     --assets "$TMPDIR/" \
     --name "$NAME" \
+    --version-from "$GAME_DIR" ${CART_VERSION:+--version "$CART_VERSION"} \
     $RES_ARGS \
     --keyboard \
     --pointer \
