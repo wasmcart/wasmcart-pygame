@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1
+
+**An unzipped cart runs as a folder.** The importer looked for the game's modules only as `assets/main.py`, a name a
+packed cart answers but a cart directory did not before wasmcart 0.41.2, so `npx wasmcart .` on an unzipped cart
+stopped with `No module named 'main'`. The importer now checks once at boot which name the host answers and imports the
+game's modules by it (both engines, `src/cart_shim.c` and `src/cart_shim_minimal.c`). Writing a game is now: unzip a
+release cart, edit `assets/main.py`, run `npx wasmcart .`; pack only to ship. README's quick start says so.
+
+Checked in romdev on the current wasmcart host (0.41.1, which answers only the bare name): the unzipped hello_pygame
+cart, an edit of its title text, Solar Wolf (40 modules plus data) and Space Shooter all run from folders; packed
+carts are unchanged; `tests/verify-clock.mjs` passes. The 0.3.0 engine fails the same folder run.
+
 ## 0.3.0
 
 **Game time follows the host's frame clock.** `pygame.time.get_ticks()`, `Clock.tick()`, `Clock.get_time()` and

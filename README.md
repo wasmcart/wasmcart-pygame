@@ -65,21 +65,27 @@ To write your own:
 git clone https://github.com/wasmcart/wasmcart-pygame    # examples + docs
 mkdir my-game && cd my-game
 curl -LO https://github.com/wasmcart/wasmcart-pygame/releases/latest/download/hello_pygame.wasc
-unzip hello_pygame.wasc && rm hello_pygame.wasc    # cart.wasm + assets/
-npx wasmcart pack --wasm cart.wasm --assets assets --name my-game \
-  --width 640 --height 480 -o my-game.wasc
-npx wasmcart my-game.wasc                          # opens a window
+unzip hello_pygame.wasc && rm hello_pygame.wasc    # manifest.json, cart.wasm, assets/
+npx wasmcart .                                     # runs the folder in a window
 ```
 
-Your game is `assets/main.py`. Edit it, then rerun the last two commands.
-A `.wasc` is a ZIP, so any release cart unpacks into the same starting point:
-the prebuilt engine (`cart.wasm`: CPython + pygame-ce + SDL2 + GL), the Python
-stdlib in `assets/stdlib/`, and the game. No compiler, no Emscripten.
-`my-game.wasc` is the shippable file.
+Your game is `assets/main.py`. Edit it and run `npx wasmcart .` again: the
+folder runs as it is, with no packing step. A `.wasc` is a ZIP, so any release
+cart unpacks into the same starting point: the prebuilt engine (`cart.wasm`:
+CPython + pygame-ce + SDL2 + GL), the Python stdlib in `assets/stdlib/`, and
+the game. No compiler, no Emscripten. Folder runs need a 0.3.1 or later cart.
+
+When it is ready to share, pack the folder into one file:
+
+```bash
+npx wasmcart pack --wasm cart.wasm --assets assets --name my-game \
+  --width 640 --height 480 -o my-game.wasc
+```
 
 If you change the window size in `set_mode()`, put the same `WxH` in
-`assets/resolution.txt` and in `--width`/`--height`: the host sizes its window
-before your code runs.
+`assets/resolution.txt`, in `manifest.json`'s `width`/`height` (for folder
+runs) and in `--width`/`--height`: the host sizes its window before your code
+runs.
 
 To start from one of the clone's [examples](#examples) instead (from inside
 `my-game`):
@@ -88,9 +94,7 @@ To start from one of the clone's [examples](#examples) instead (from inside
 rm assets/*.py
 cp -r ../wasmcart-pygame/examples/spaceshooter/. assets/
 python3 ../wasmcart-pygame/tools/find_resolution.py assets > assets/resolution.txt
-cat assets/resolution.txt                          # 480x600: use it for --width/--height
-npx wasmcart pack --wasm cart.wasm --assets assets --name my-game \
-  --width 480 --height 600 -o my-game.wasc
+cat assets/resolution.txt     # 480x600: put it in manifest.json, then npx wasmcart .
 ```
 
 ### Run it
