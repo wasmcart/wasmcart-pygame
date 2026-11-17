@@ -221,3 +221,42 @@ typedef union {'''
                 pc.write_text(new)
                 print(f'patched {pc}: added _pc_view_kind_arg and pointed '
                       f'surface_to_array at it')
+
+
+# ---------------------------------------------------------------------------
+# time.c: no spin-wait in accurate_delay.
+#
+# pygame.time.delay() and Clock.tick_busy_loop() go through accurate_delay,
+# which ends in a loop that spins until SDL_GetTicks has advanced by the
+# requested amount. In a cart SDL_GetTicks is the host's frame clock
+# (cart_shim.c, game_clock_ms): it only moves between frames, never inside
+# one, so that loop never exits and the cart hangs for good. Game time cannot
+# pass within a frame, so the delay returns at once, the same as
+# pygame.time.wait() already does (SDL_Delay is a yield point, not a sleep).
+tm = src.parent / 'time.c'
+if tm.exists():
+    ttext = tm.read_text()
+    if 'wasmcart: no spin-wait' in ttext:
+        print('time.c already patched')
+    else:
+        anchor = """    do {
+        delay = ticks - (PG_GetTicks() - funcstart);
+    } while (delay > 0 && delay < maximum_delay);
+"""
+        replacement = """#ifndef __EMSCRIPTEN__
+    do {
+        delay = ticks - (PG_GetTicks() - funcstart);
+    } while (delay > 0 && delay < maximum_delay);
+#else
+    /* wasmcart: no spin-wait. The cart's clock is the host frame clock and
+     * does not move inside a frame, so this loop would never exit. */
+    (void)delay;
+    (void)maximum_delay;
+#endif
+"""
+        if anchor not in ttext:
+            print('time.c: anchor not found (upstream may have changed)',
+                  file=sys.stderr)
+        else:
+            tm.write_text(ttext.replace(anchor, replacement, 1))
+            print(f'patched {tm}: accurate_delay does not spin')

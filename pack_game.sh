@@ -14,7 +14,8 @@ GAME_DIR="${1:?Usage: pack_game.sh <game_dir> <output.wasc> [name]}"
 OUTPUT="${2:?Usage: pack_game.sh <game_dir> <output.wasc> [name]}"
 NAME="${3:-Python Game}"
 
-CART_WASM="$HERE/out/cart.wasm"
+# CART_WASM picks another engine (a test packing a control build).
+CART_WASM="${CART_WASM:-$HERE/out/cart.wasm}"
 # Fall back to minimal if full build doesn't exist
 if [ ! -f "$CART_WASM" ]; then
     CART_WASM="$HERE/out/cart_minimal.wasm"

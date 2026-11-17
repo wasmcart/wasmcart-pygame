@@ -583,6 +583,8 @@ static PyObject *py_music_unpause(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static PyObject *py_game_ms(PyObject *self, PyObject *args);
+
 static PyMethodDef wasmcart_methods[] = {
     {"get_fb_info", py_get_fb_info, METH_NOARGS,  NULL},
     {"set_pixel",   py_set_pixel,   METH_VARARGS, NULL},
@@ -593,6 +595,7 @@ static PyMethodDef wasmcart_methods[] = {
     {"pad_rumble",  py_pad_rumble,  METH_VARARGS, NULL},
     {"pad_rumble_stop", py_pad_rumble_stop, METH_VARARGS, NULL},
     {"get_time",    py_get_time,    METH_NOARGS,  NULL},
+    {"game_ms",     py_game_ms,     METH_NOARGS,  NULL},
     {"asset_size",  py_asset_size,  METH_VARARGS, NULL},
     {"load_asset",  py_load_asset,  METH_VARARGS, NULL},
     {"log",         py_log,         METH_VARARGS, NULL},
@@ -627,58 +630,69 @@ PyMODINIT_FUNC PyInit__wasmcart(void) {
 /* ── SDL clock override ──────────────────────────────────────────── */
 
 /*
- * SDL_GetTicks/SDL_GetTicks64 report wall-clock time, which is the wrong
- * clock for a cart. The host owns the frame cadence -- it decides when
- * wc_render is called, and it may run frames faster than real time (a
- * headless --frames screenshot run) or slower (a paused debugger). SDL's
- * wall clock tracks none of that.
+ * Game time is the host's frame clock, wc_time.
  *
- * The visible damage is anything a game times in milliseconds. Everything
- * that reads the clock does so through here:
+ * SDL_GetTicks/SDL_GetTicks64 would otherwise read the WASI wall clock, which
+ * is the wrong clock for a cart: the host owns time. Everything that measures
+ * milliseconds in a game reads it through here:
  *
  *   pygame.time.get_ticks()      -> SDL_GetTicks
- *   pygame.time.Clock.tick(fps)  -> SDL_GetTicks deltas + SDL_Delay
- *   Clock.get_fps()
+ *   Clock.tick(fps) / get_time() -> SDL_GetTicks deltas
+ *   Clock.get_fps()              -> SDL_GetTicks deltas
+ *   time.monotonic / perf_counter / time.time  (patched in the boot script
+ *                                  to read game_clock_ms, below)
  *
- * In a headless run wc_render is called back-to-back, so wall time barely
- * moves: after 300 frames get_ticks() read 384 ms instead of 7500. Every
- * timed transition stalled -- SolarWolf's splash waits 1200 ms before
- * handing off to the menu and simply never did -- and Clock.tick(40)
- * returned 0 or 1 ms, so every game that scales movement by the frame delta
- * stood still while rendering perfectly. A cart that looks like it is
- * running and is frozen in game-time is exactly the failure that reads as
- * success.
+ * The rule: game time follows wc_time.time_ms, which the host writes before
+ * every wc_render. The host already does the two things a cart cannot:
  *
- * So the tick source becomes the host's frame clock. wc_time.time_ms
- * advances one frame's worth per wc_render regardless of how fast the host
- * chooses to call it, which makes game time a function of frames rendered.
- * A game paced this way behaves identically headless and in a window, and a
- * screenshot at frame N shows what frame N should show.
+ *   - It clamps a stall. A frame longer than MAX_DELTA_MS (250 ms) reports
+ *     250 ms and the rest is absorbed, so a dragged window, a backgrounded
+ *     tab or a debugger pause does not teleport everything that moves.
+ *   - Under deterministic mode (load(cart, {deterministic: {seed, stepMs}}),
+ *     the CLI's --seed) time_ms is frame * stepMs (16.667 ms by default), so
+ *     frame N always reports the same time and screenshots stay reproducible.
+ *
+ * With a real clock, a 120 Hz display reports ~8.3 ms per frame and a game
+ * timed by get_ticks()/Clock.tick() runs at real speed. The previous rule,
+ * one fixed 16.667 ms step per wc_render, ran exactly those games twice as
+ * fast on a 120 Hz display.
+ *
+ * Why the fixed step existed, and why that reason is gone: a headless
+ * `--frames` run calls wc_render back to back, far faster than real time.
+ * Reading the wall clock there gave 384 ms after 300 frames, so timed
+ * transitions never fired (SolarWolf's splash waits 1200 ms) and
+ * Clock.tick(40) returned 0-1 ms; a delta floor did not help either, since a
+ * heavy frame still took 1.7 ms of wall time. A run that steps faster than
+ * real time and wants frame-based time is exactly what the host's
+ * deterministic mode is for, so such a run now passes a seed (the CLI's
+ * --seed, or deterministic: {seed} in CartHost.load; this repo's harnesses
+ * do). A headless run WITHOUT a seed gets the real clock, like any other
+ * host: game time is the real time that passed, however many frames that
+ * took.
+ *
+ * time_ms is read live rather than accumulated in wc_render, and only kept
+ * from going backwards: a host that switches clocks mid-run (setFixedStep)
+ * can step time_ms down, and a game clock that runs backwards breaks every
+ * `now - then` in the game. In normal operation the value IS time_ms.
+ *
+ * Audio pumping is unaffected: it uses wc_time.delta_ms directly (below and
+ * in wc_render), which is the same clamped host delta.
  */
-/* Game-time accumulator, advanced once per wc_render.
- *
- * The rule is one frame of game time per frame rendered. Not "however long
- * that frame took": a host may run frames far faster than real time (a
- * headless --frames screenshot pass) or far slower (a window being dragged,
- * a backgrounded tab, a debugger), and in both cases the game should see the
- * same steady cadence. That is what makes a screenshot at frame N
- * reproducible, and what stops a slow frame from teleporting everything that
- * moves.
- *
- * Deriving it from wc_time.delta_ms with a floor was tried first and is
- * subtly wrong: a host that renders a heavy frame in 1.7 ms of wall time
- * passes any floor below that and the clock advances 1.7 ms, so the game
- * still runs ~10x slow while looking correct frame to frame. The nominal
- * step is unconditional for that reason.
- *
- * The host's real delta is still honoured for one thing -- audio pumping,
- * further down -- because that has to match the sample rate of the wall
- * clock the speaker runs on, not game time. */
-static double frame_clock_ms = 0.0;
-#define FRAME_STEP_MS (1000.0 / 60.0)
+static double game_clock_offset_ms = 0.0;
+static double game_clock_last_ms = 0.0;
+
+static double game_clock_ms(void) {
+    double t = wc_time.time_ms + game_clock_offset_ms;
+    if (t < game_clock_last_ms) {
+        game_clock_offset_ms += game_clock_last_ms - t;
+        t = game_clock_last_ms;
+    }
+    game_clock_last_ms = t;
+    return t;
+}
 
 static uint64_t sdl_ticks_ms(void) {
-    return (uint64_t)frame_clock_ms;
+    return (uint64_t)game_clock_ms();
 }
 
 uint32_t __wrap_SDL_GetTicks(void) {
@@ -687,6 +701,12 @@ uint32_t __wrap_SDL_GetTicks(void) {
 
 uint64_t __wrap_SDL_GetTicks64(void) {
     return sdl_ticks_ms();
+}
+
+/* _wasmcart.game_ms(): the same clock as a float, for the time module patch
+ * in the boot script (time.monotonic, perf_counter, time.time). */
+static PyObject *py_game_ms(PyObject *self, PyObject *args) {
+    return PyFloat_FromDouble(game_clock_ms());
 }
 
 /* ── SDL_Delay override (ASYNCIFY yield point) ───────────────────── */
@@ -750,7 +770,30 @@ static const char *boot_script_hook =
     "_wasmcart.log('wasc importer registered')\n"
 ;
 
-/* Part 2: load the game */
+/* Part 1b: the time module follows game time (see game_clock_ms) */
+static const char *boot_script_clock =
+    "import time as _t, _wasmcart\n"
+    "def _wc_install_clock():\n"
+    "    gm = _wasmcart.game_ms\n"
+    "    epoch_ns = _t.time_ns() - int(gm() * 1000000)\n"
+    "    def monotonic():\n"
+    "        return gm() / 1000.0\n"
+    "    def monotonic_ns():\n"
+    "        return int(gm() * 1000000)\n"
+    "    def time():\n"
+    "        return (epoch_ns + int(gm() * 1000000)) / 1e9\n"
+    "    def time_ns():\n"
+    "        return epoch_ns + int(gm() * 1000000)\n"
+    "    _t.monotonic = monotonic\n"
+    "    _t.monotonic_ns = monotonic_ns\n"
+    "    _t.perf_counter = monotonic\n"
+    "    _t.perf_counter_ns = monotonic_ns\n"
+    "    _t.time = time\n"
+    "    _t.time_ns = time_ns\n"
+    "_wc_install_clock()\n"
+    "del _wc_install_clock, _t\n"
+;
+
 /* Part 2: load the game */
 static const char *boot_script = "import main\n";
 
@@ -866,6 +909,14 @@ void wc_init(void) {
 
     /* Register import hook */
     PyRun_SimpleString(boot_script_hook);
+
+    /* Python's time module reads the WASI wall clock. Point the interval
+     * clocks at game time so time.monotonic()/perf_counter() deltas agree
+     * with pygame.time.get_ticks() and Clock.tick(), including under a
+     * seeded run (see game_clock_ms). time.time() keeps a real calendar
+     * origin and advances with game time. time.sleep() is left alone: a cart
+     * cannot block, and game time only moves between frames. */
+    PyRun_SimpleString(boot_script_clock);
 
     /* Initialize pygame and export submodule APIs at package level */
     WC_LOG("importing pygame...");
@@ -1292,11 +1343,8 @@ __attribute__((export_name("wc_render")))
 void wc_render(void) {
     if (!initialized) return;
 
-    /* Advance the game clock by one frame. See sdl_ticks_ms above: this, not
-     * wall time, is what SDL_GetTicks reports, so pygame.time.get_ticks() and
-     * Clock.tick() measure frames rendered rather than seconds elapsed on
-     * whatever machine happens to be hosting. */
-    frame_clock_ms += FRAME_STEP_MS;
+    /* No clock work here: game time is wc_time.time_ms, which the host wrote
+     * before calling us (see game_clock_ms above). */
 
     if (use_callback) {
         /* Pump audio — write enough samples to cover this frame plus a small

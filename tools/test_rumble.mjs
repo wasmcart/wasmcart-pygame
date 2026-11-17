@@ -46,7 +46,10 @@ async function run({ label, handler }) {
   const calls = [];
   const logs = [];
 
-  await host.load(cart);
+  // Seeded: frames here run back to back, far faster than real time, and the
+  // cart times its effects with pygame.time.get_ticks(), which is the host's
+  // clock. The deterministic clock makes frame N mean N * 16.667 ms.
+  await host.load(cart, { deterministic: { seed: 1 } });
   if (handler) {
     host.setRumbleHandler({
       hasRumble: () => true,

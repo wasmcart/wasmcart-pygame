@@ -42,8 +42,8 @@ for (let i = 1; i < args.length; i++) {
   else if (args[i] === '--min-ink') minInk = parseFloat(args[++i]);
 }
 
-/* Minimal PNG reader: only the shape this repo's own tools write --
- * 8-bit truecolor, single IDAT stream, filters 0-4. */
+/* Minimal PNG reader: 8-bit truecolor (what this repo's own tools write) or
+ * truecolor+alpha (what romdev's frame screenshots write), filters 0-4. */
 function decodePng(buf) {
   if (buf.readUInt32BE(0) !== 0x89504e47) throw new Error('not a PNG');
   let off = 8;
@@ -63,11 +63,11 @@ function decodePng(buf) {
     } else if (type === 'IEND') break;
     off += 12 + len;
   }
-  if (bitDepth !== 8 || colorType !== 2) {
+  if (bitDepth !== 8 || (colorType !== 2 && colorType !== 6)) {
     throw new Error(`unsupported PNG (depth ${bitDepth}, color type ${colorType})`);
   }
   const raw = inflateSync(Buffer.concat(idat));
-  const bpp = 3;
+  const bpp = colorType === 6 ? 4 : 3;
   const stride = width * bpp;
   const out = Buffer.alloc(height * stride);
   let pos = 0;
@@ -98,15 +98,15 @@ function decodePng(buf) {
     }
     pos += stride;
   }
-  return { width, height, pixels: out };
+  return { width, height, pixels: out, bpp };
 }
 
-const { width, height, pixels } = decodePng(readFileSync(path));
+const { width, height, pixels, bpp } = decodePng(readFileSync(path));
 
 const counts = new Map();
 const total = width * height;
 for (let i = 0; i < total; i++) {
-  const p = i * 3;
+  const p = i * bpp;
   const key = (pixels[p] << 16) | (pixels[p + 1] << 8) | pixels[p + 2];
   counts.set(key, (counts.get(key) || 0) + 1);
 }

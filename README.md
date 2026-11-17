@@ -34,7 +34,9 @@ my_game.wasc (ZIP)
 | `Surface.get_palette()` / `set_palette()` | Working (palette-swap recolouring) |
 | `pygame.mixer.Sound()` | Working (WAV, OGG via SDL_mixer; `play()` returns a Channel) |
 | `pygame.mixer.music` | Working (OGG + `.xm`/`.mod` trackers, streamed from cart assets) |
-| `pygame.time.get_ticks()` / `Clock` | Working (frame-derived clock, see below) |
+| `pygame.time.get_ticks()` / `Clock` | Working (the host's frame clock, see below) |
+| `time.monotonic()` / `perf_counter()` / `time()` | Working (same clock as `get_ticks()`) |
+| `pygame.time.set_timer()` | Not available (SDL timers need a thread); count `Clock.tick()` ms instead |
 | `threading.Thread` | Cooperative: `start()` runs the target inline, `is_alive()` is False |
 | `pygame.font.Font()` | Working (with bundled .ttf) |
 | `pygame.key.get_pressed()` | Working (via wasmcart pad → SDL key translation) |
@@ -48,7 +50,7 @@ my_game.wasc (ZIP)
 
 ### Just play something
 
-Eight prebuilt carts are attached to the
+Prebuilt carts are attached to the
 [latest release](https://github.com/wasmcart/wasmcart-pygame/releases/latest) —
 download one and run it. No Python, no pygame, no build:
 
@@ -71,7 +73,7 @@ This bundles `cart.wasm` + your game files + Python stdlib + pygame helpers into
 ```bash
 npx wasmcart out/my_game.wasc            # SDL window (auto-detects GL)
 npx wasmcart out/my_game.wasc --term     # ANSI terminal, SSH-friendly
-npx wasmcart out/my_game.wasc --frames 120 --shot out.png   # headless
+npx wasmcart out/my_game.wasc --frames 120 --shot out.png --seed 1   # headless
 ```
 
 Every wasmcart host runs the same `.wasc`: the CLI above, a browser via
@@ -261,24 +263,44 @@ headlessly with a rumble handler attached and asserts the calls arrive.
 
 ### The clock
 
-`pygame.time.get_ticks()`, `Clock.tick(fps)` and `Clock.get_fps()` all read
-SDL's tick source, and in a cart that is **not** wall-clock time. The host
-decides when `wc_render` is called: a headless `--frames` screenshot run goes
-back to back, far faster than real time, and a dragged window or a paused
-debugger goes far slower.
+`pygame.time.get_ticks()`, `Clock.tick(fps)`, `Clock.get_time()`,
+`Clock.get_fps()`, `time.monotonic()`, `time.perf_counter()` and
+`time.time()` all read one clock: the host's frame clock (`wc_time`), which
+the host writes before every frame.
 
-So the tick source advances one nominal frame per `wc_render`. Game time is a
-function of frames rendered, which means a cart behaves identically headless
-and in a window, and a screenshot at frame N shows what frame N should show.
+- **In a window** that is real time. A 120 Hz display reports ~8.3 ms per
+  frame, so a game that scales movement by `clock.tick()`'s return value runs
+  at the same speed at any refresh rate. The host clamps a stall (a dragged
+  window, a background tab, a debugger) to 250 ms, so nothing teleports.
+- **In a seeded run** (`npx wasmcart game.wasc --seed 1`, or
+  `deterministic: {seed, stepMs}` in `CartHost.load`) it is a fixed step,
+  16.667 ms per frame by default. Frame N is always N steps of game time, so
+  screenshots and regression runs are reproducible.
+- **Headless without a seed** it is still real time: a `--frames` run that
+  renders frames back to back sees only the real milliseconds that passed,
+  which is usually far less than the frame count suggests. Timed transitions
+  (a splash that waits 1.2 s) will not have fired. Pass `--seed` for any
+  headless or scripted run; this repo's harnesses (`tools/drive_cart.mjs`,
+  `tools/test_rumble.mjs`, `tests/verify-clock.mjs`) all do.
 
-This matters more than it sounds. On wall-clock time, a headless run reported
-384 ms after 300 frames instead of 7500: every timed transition stalled and
-every delta-scaled movement stood still, while the game rendered its first
-screen perfectly, forever. A cart that looks like it is running and is frozen
-in game-time is exactly the failure that reads as success.
+`_wc_frame()` runs once per host frame, so a game that moves a fixed amount
+per call moves twice as fast on a 120 Hz display. Scale by the frame time:
 
-Audio pumping still uses the host's real delta, because that has to track the
-wall clock the speaker runs on.
+```python
+def _wc_frame():
+    dt = clock.tick(60) / 1000.0     # seconds since the last frame
+    player.x += 120 * dt             # 120 px per second at any refresh rate
+```
+
+Game time only moves between frames, never inside one. `pygame.time.wait()`,
+`pygame.time.delay()` and `Clock.tick_busy_loop()` return at once, and
+`time.sleep()` blocks the frame without advancing game time. Audio is pumped
+from the same host delta, so it keeps pace with the speaker.
+
+Before 0.3.0 the clock advanced a fixed 16.667 ms per frame whatever the
+host reported, which kept headless runs moving but ran every timed game
+twice as fast on a 120 Hz display. Headless runs now get that behaviour from
+the host's deterministic mode instead.
 
 ### Import hook
 
@@ -420,7 +442,7 @@ missing.
 SolarWolf found eight runtime gaps, all fixed here rather than worked around
 in the game: missing `pygame.ver`, paletted images flattened to RGBA, no GIF
 decoder, `threading.Thread.start()` raising, `mixer.music` being a silent
-no-op, a wall-clock instead of frame-derived clock, a missing `urllib` taking
+no-op, the wall clock instead of the host's frame clock, a missing `urllib` taking
 down the boot, and a resolution scraper blind to `SIZE = 800, 600`. Its README
 documents each one.
 
@@ -448,6 +470,20 @@ black PNG for a cart that is rendering perfectly.
 `check_render.mjs` reports distinct colours and ink coverage. Verified against
 a control: a build with `pygame.display.update()` removed runs the same 700
 frames and comes back `colors=1 ink=0.00%`.
+
+### Testing the runtime
+
+```bash
+node tests/verify-clock.mjs              # the clock (engine: out/cart.wasm)
+node tools/test_rumble.mjs out/rumble.wasc
+```
+
+`verify-clock.mjs` packs `tests/clock/` and runs it three ways: seeded at
+16.667 ms (twice, the runs must be bit-identical), seeded at 8.333 ms (a
+120 Hz host) and on the real clock with 40 ms between frames. Every clock a
+game can read must agree with `wc_time`, and a 1200 ms splash must hand off
+at 1200 ms of game time in all three. Pass another engine to run it as a
+control: the 0.2.x engine fails 14 of its 21 checks.
 
 ## Limitations
 

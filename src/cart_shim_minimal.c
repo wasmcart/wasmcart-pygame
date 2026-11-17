@@ -130,6 +130,22 @@ static PyObject *py_get_pad(PyObject *self, PyObject *args) {
         p->left_trigger, p->right_trigger, (int)p->connected);
 }
 
+/* Game time: the host's wc_time.time_ms, kept from running backwards if a
+ * host switches clocks mid-run. Same rule as cart_shim.c (game_clock_ms),
+ * which explains it; the time module patch in the boot script reads it. */
+static double game_clock_offset_ms = 0.0;
+static double game_clock_last_ms = 0.0;
+
+static PyObject *py_game_ms(PyObject *self, PyObject *args) {
+    double t = time_info.time_ms + game_clock_offset_ms;
+    if (t < game_clock_last_ms) {
+        game_clock_offset_ms += game_clock_last_ms - t;
+        t = game_clock_last_ms;
+    }
+    game_clock_last_ms = t;
+    return PyFloat_FromDouble(t);
+}
+
 /* Get time: get_time() -> (time_ms, delta_ms, frame) */
 static PyObject *py_get_time(PyObject *self, PyObject *args) {
     return Py_BuildValue("(ddI)", time_info.time_ms, time_info.delta_ms, time_info.frame);
@@ -180,6 +196,7 @@ static PyMethodDef wasmcart_methods[] = {
     {"clear",       py_clear,       METH_VARARGS, "clear(argb)"},
     {"get_pad",     py_get_pad,     METH_VARARGS, "get_pad(index) -> pad tuple"},
     {"get_time",    py_get_time,    METH_NOARGS,  "get_time() -> (time_ms, delta_ms, frame)"},
+    {"game_ms",     py_game_ms,     METH_NOARGS,  "game_ms() -> game time in ms"},
     {"asset_size",  py_asset_size,  METH_VARARGS, "asset_size(path) -> int"},
     {"load_asset",  py_load_asset,  METH_VARARGS, "load_asset(path) -> bytes or None"},
     {"log",         py_log,         METH_VARARGS, "log(message)"},
@@ -245,6 +262,28 @@ static const char *boot_script =
     "\n"
     "sys.meta_path.insert(0, _WascFinder())\n"
     "_wasmcart.log('wasc importer registered')\n"
+    "\n"
+    "# time.monotonic/perf_counter/time follow game time (the host clock)\n"
+    "import time as _t\n"
+    "def _wc_install_clock():\n"
+    "    gm = _wasmcart.game_ms\n"
+    "    epoch_ns = _t.time_ns() - int(gm() * 1000000)\n"
+    "    def monotonic():\n"
+    "        return gm() / 1000.0\n"
+    "    def monotonic_ns():\n"
+    "        return int(gm() * 1000000)\n"
+    "    def time():\n"
+    "        return (epoch_ns + int(gm() * 1000000)) / 1e9\n"
+    "    def time_ns():\n"
+    "        return epoch_ns + int(gm() * 1000000)\n"
+    "    _t.monotonic = monotonic\n"
+    "    _t.monotonic_ns = monotonic_ns\n"
+    "    _t.perf_counter = monotonic\n"
+    "    _t.perf_counter_ns = monotonic_ns\n"
+    "    _t.time = time\n"
+    "    _t.time_ns = time_ns\n"
+    "_wc_install_clock()\n"
+    "del _wc_install_clock, _t\n"
     "import main\n"
 ;
 

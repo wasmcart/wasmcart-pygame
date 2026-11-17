@@ -177,13 +177,19 @@ instead of 7500. SolarWolf's splash waits 1200 ms before handing off to the
 menu and simply never did, while rendering the splash perfectly, forever.
 `Clock.tick(40)` returned 0 or 1, so every delta-scaled movement stood still.
 
-`SDL_GetTicks`/`SDL_GetTicks64` are now wrapped to a game clock that advances
-one nominal frame per `wc_render`. Deriving it from `wc_time.delta_ms` with a
-floor was tried first and is subtly wrong: a host that renders a heavy frame
-in 1.7 ms of wall time passes any floor below that, and the game still runs
-~10x slow while looking correct frame to frame. The step is unconditional for
-that reason. The host's real delta is still used for audio pumping, which has
-to track the wall clock the speaker runs on.
+`SDL_GetTicks`/`SDL_GetTicks64` are wrapped to the game clock. The first fix
+advanced it one nominal frame (16.667 ms) per `wc_render`; deriving it from
+`wc_time.delta_ms` with a floor had been tried and failed, since a heavy
+frame still rendered in 1.7 ms of wall time.
+
+Since 0.3.0 the game clock is the host's frame clock, `wc_time.time_ms`. The
+fixed step ran every timed game twice as fast on a 120 Hz display, and the
+case it was protecting, a headless run going faster than real time, is what
+the host's deterministic mode is for: a seeded run (`--seed`, or
+`deterministic: {seed}` in `CartHost.load`) advances a fixed 16.667 ms per
+frame, so the splash still hands off at frame 72 (frame 144 at an 8.333 ms
+step). Without a seed a headless run gets real time. `tests/verify-clock.mjs`
+checks the 1200 ms handoff under both clocks.
 
 ### 7. `urllib` was missing, and that killed the boot
 

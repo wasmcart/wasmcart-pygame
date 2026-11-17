@@ -13,6 +13,11 @@
  *        --shots "150:menu.png,420:play.png" \
  *        --frames 500
  *
+ * The run is seeded (wasmcart's deterministic clock): frames go back to back,
+ * far faster than real time, and the cart's game time is the host's clock,
+ * so frame N is N * stepMs of game time. --step-ms 8.333 runs it as a
+ * 120 Hz host would; --seed picks the seed (default 1).
+ *
  * --script is `frame:BUTTONS` pairs, BUTTONS being a `+`-joined list of
  * wasmcart button names (or empty to release everything). Each entry holds
  * until the next one. --shots writes a PNG at the named frames.
@@ -85,15 +90,17 @@ const argv = process.argv.slice(2);
 const cartPath = argv[0];
 if (!cartPath) {
   console.error('usage: drive_cart.mjs <cart.wasc> [--script F:BTNS;...] '
-                + '[--shots F:file.png,...] [--frames N]');
+                + '[--shots F:file.png,...] [--frames N] [--seed N] [--step-ms MS]');
   process.exit(2);
 }
 
-const opt = { frames: 300, script: '', shots: '' };
+const opt = { frames: 300, script: '', shots: '', seed: 1, stepMs: 1000 / 60 };
 for (let i = 1; i < argv.length; i++) {
   if (argv[i] === '--frames') opt.frames = parseInt(argv[++i], 10) || 300;
   else if (argv[i] === '--script') opt.script = argv[++i] || '';
   else if (argv[i] === '--shots') opt.shots = argv[++i] || '';
+  else if (argv[i] === '--seed') opt.seed = parseInt(argv[++i], 10) >>> 0;
+  else if (argv[i] === '--step-ms') opt.stepMs = parseFloat(argv[++i]) || 1000 / 60;
 }
 
 // frame -> button bitmask
@@ -123,7 +130,7 @@ for (const part of opt.shots.split(',')) {
 }
 
 const host = new CartHost();
-await host.load(cartPath, {});
+await host.load(cartPath, { deterministic: { seed: opt.seed, stepMs: opt.stepMs } });
 
 /* A pygame cart draws through GL (sdl2_wc blits the SDL surface as a texture),
  * so the pixels are in the GPU framebuffer and CartHost's 2D framebuffer stays
