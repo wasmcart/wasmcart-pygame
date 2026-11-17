@@ -48,11 +48,10 @@ my_game.wasc (ZIP)
 
 ## Quick Start
 
-### Just play something
-
-Prebuilt carts are attached to the
-[latest release](https://github.com/wasmcart/wasmcart-pygame/releases/latest) —
-download one and run it. No Python, no pygame, no build:
+**Just want to play something?** Prebuilt carts are attached to the
+[latest release](https://github.com/wasmcart/wasmcart-pygame/releases/latest):
+Boom, Solar Wolf, Space Shooter, a 3D engine and more. Download one and run
+it. No Python, no pygame, no build:
 
 ```bash
 npx wasmcart boom_py.wasc
@@ -60,20 +59,46 @@ npx wasmcart boom_py.wasc
 
 Each cart carries CPython 3.13, pygame-ce, and the game's own code and assets.
 
-### Pack a game
+To write your own:
 
 ```bash
-bash pack_game.sh my_game_dir/ out/my_game.wasc "My Game"
+git clone https://github.com/wasmcart/wasmcart-pygame    # examples + docs
+mkdir my-game && cd my-game
+curl -LO https://github.com/wasmcart/wasmcart-pygame/releases/latest/download/hello_pygame.wasc
+unzip hello_pygame.wasc && rm hello_pygame.wasc    # cart.wasm + assets/
+npx wasmcart pack --wasm cart.wasm --assets assets --name my-game \
+  --width 640 --height 480 -o my-game.wasc
+npx wasmcart my-game.wasc                          # opens a window
 ```
 
-This bundles `cart.wasm` + your game files + Python stdlib + pygame helpers into a single `.wasc`.
+Your game is `assets/main.py`. Edit it, then rerun the last two commands.
+A `.wasc` is a ZIP, so any release cart unpacks into the same starting point:
+the prebuilt engine (`cart.wasm`: CPython + pygame-ce + SDL2 + GL), the Python
+stdlib in `assets/stdlib/`, and the game. No compiler, no Emscripten.
+`my-game.wasc` is the shippable file.
+
+If you change the window size in `set_mode()`, put the same `WxH` in
+`assets/resolution.txt` and in `--width`/`--height`: the host sizes its window
+before your code runs.
+
+To start from one of the clone's [examples](#examples) instead (from inside
+`my-game`):
+
+```bash
+rm assets/*.py
+cp -r ../wasmcart-pygame/examples/spaceshooter/. assets/
+python3 ../wasmcart-pygame/tools/find_resolution.py assets > assets/resolution.txt
+cat assets/resolution.txt                          # 480x600: use it for --width/--height
+npx wasmcart pack --wasm cart.wasm --assets assets --name my-game \
+  --width 480 --height 600 -o my-game.wasc
+```
 
 ### Run it
 
 ```bash
-npx wasmcart out/my_game.wasc            # SDL window (auto-detects GL)
-npx wasmcart out/my_game.wasc --term     # ANSI terminal, SSH-friendly
-npx wasmcart out/my_game.wasc --frames 120 --shot out.png --seed 1   # headless
+npx wasmcart my-game.wasc            # SDL window (auto-detects GL)
+npx wasmcart my-game.wasc --term     # ANSI terminal, SSH-friendly
+npx wasmcart my-game.wasc --frames 120 --shot out.png --seed 1   # headless
 ```
 
 Every wasmcart host runs the same `.wasc`: the CLI above, a browser via
@@ -405,7 +430,10 @@ wasmcart-pygame/
 
 ## Examples
 
-Nine, all verified rendering. Pack and run any of them:
+Nine, all verified rendering. With a runtime built (see
+[Building from Source](#building-from-source)), pack and run any of them;
+without one, the [Quick Start](#quick-start) shows how to start from an example
+using a release cart's prebuilt engine:
 
 ```bash
 bash pack_game.sh examples/boom_py/ out/boom_py.wasc "Boom"
